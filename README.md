@@ -13,7 +13,7 @@ EM3DFold is a software package for automatic protein, RNA, and DNA (and small mo
 
 **CUDA**: CUDA >= 11.8 is required.
 
-**Disk Storage**: EM3DFold pretrained weights and language model weights require at least 4 GB free disk space.
+**Disk Storage**: EM3DFold pretrained weights and language model weights require at least 6 GB free disk space.
 
 ## Installation
 #### 0. Install conda

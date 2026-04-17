@@ -6,16 +6,17 @@ from typing import Dict, List
 import numpy as np
 import torch
 
-from em3dfold.utils.fasta_utils import FASTASequence
-from em3dfold.utils.torch_utils import clear_cuda_cache
+from em3dfold.utils.fasta_utils import FASTASequence, filter_small_sequences
+from em3dfold.utils.torch_utils import clear_cuda_cache, get_module_device
+
 
 def read_fasta(filename):
-    with open(filename, 'r') as f:
+    with open(filename, "r") as f:
         lines = f.readlines()
     seqs = []
     seq = ""
     for line in lines:
-        if line.startswith('>'):
+        if line.startswith(">"):
             if len(seq) > 0:
                 seqs.append(seq)
             seq = ""
@@ -25,12 +26,6 @@ def read_fasta(filename):
         seqs.append(seq)
     return seqs
 
-class BadFastaFile(Exception):
-    pass
-
-from em3dfold.utils.fasta_utils import FASTASequence, filter_small_sequences
-from em3dfold.utils.torch_utils import get_module_device
-
 
 class BadFastaFile(Exception):
     pass
@@ -38,8 +33,7 @@ class BadFastaFile(Exception):
 
 def crop_long_chain(chain: FASTASequence, max_chain_length: int = 1024):
     """
-    将超长序列裁剪成多个重叠窗口。
-    相邻窗口重叠 50%。
+    Split an overlong sequence into overlapping windows with 50% overlap.
     """
     length = len(chain.seq)
     i = 0
@@ -65,7 +59,7 @@ def crop_long_chains(
     max_chain_length: int = 1024,
 ):
     """
-    对多条序列进行裁剪，并记录原始序列到裁剪片段的映射关系。
+    Crop multiple sequences and record how each original sequence maps to crops.
     """
     new_sequences = []
     chain_ids = []
@@ -106,7 +100,7 @@ def empty_transformer_results(
     device: str = "cpu",
 ):
     """
-    创建空结果，用于长链拼接。
+    Create an empty result container for stitching long chains back together.
     """
     results = {}
     results["label"] = seq_name
@@ -123,14 +117,10 @@ def process_transformer_result(
     seq_name: str = None,
 ):
     """
-    处理核酸语言模型输出。
+    Process language-model output for a single sequence.
 
-    这里默认:
-        result["representation"] 的 shape = (B, L, C)
-    并且 L 与原始序列长度一致，不带 BOS/EOS。
-
-    如果你的模型输出实际带特殊 token，需要把这里改成:
-        result["representation"][batch_idx, 1:str_length+1]
+    Assumes result["representation"] has shape (B, L, C) and that L matches
+    the original sequence length without BOS/EOS tokens.
     """
     processed_result = {}
     if seq_name is not None:
@@ -150,8 +140,8 @@ def collate_sequence_results(
     sequence_mapping: Dict,
 ):
     """
-    将长链多个裁剪窗口的结果拼回完整序列。
-    重叠区域按平均处理。
+    Stitch cropped window results back into a full-length sequence result.
+    Overlapping regions are averaged.
     """
     emb_dim = batch_results[sequence_mapping["mapping"][0]]["representations"].shape[-1]
 
@@ -176,7 +166,7 @@ def collate_sequence_results(
             chain_start : chain_start + str_length
         ] += 1
 
-    full_result["representations"] /= (representation_counts + 1e-6)
+    full_result["representations"] /= representation_counts + 1e-6
     full_result["mean_representations"] = (
         full_result["representations"].mean(0).clone()
     )
@@ -195,9 +185,10 @@ def run_transformer_on_fasta(
     use_amp=True,
 ):
     """
-    在 FASTA 序列上运行核酸语言模型，支持长链裁剪和拼接。
+    Run the nucleotide language model on FASTA sequences with crop-and-stitch
+    handling for long chains.
 
-    返回:
+    Returns:
         {
             seq_name: {
                 "label": str,
@@ -264,22 +255,10 @@ def get_lm_embeddings(
     max_chain_length=1000,
 ):
     """
-    给定若干核酸序列，返回拼接后的 residue embeddings。
+    Return concatenated residue embeddings for nucleotide sequences.
 
-    参数
-    ----
-    lang_model:
-        核酸语言模型
-    alphabet:
-        提供 batch_tokenize 的 tokenizer/alphabet
-    sequences:
-        List[str]
-    max_chain_length:
-        超长链裁剪长度
-
-    返回
-    ----
-    lm_embeddings: np.ndarray, shape = (sum(L_i), C)
+    Returns:
+        np.ndarray with shape (sum(L_i), C)
     """
     try:
         sequences = [FASTASequence(seq, "", "A") for seq in sequences]
@@ -306,6 +285,7 @@ def get_lm_embeddings(
         )
 
     return lm_embeddings
+
 
 def filter_seqs(sequences):
     # filter to have real protein residues
@@ -459,7 +439,9 @@ def main(args):
     del alphabet
     clear_cuda_cache(args.device, note="get_lm_na")
 
+
 if __name__ == "__main__":
     import argparse
+
     args = add_args(argparse.ArgumentParser()).parse_args()
     main(args)

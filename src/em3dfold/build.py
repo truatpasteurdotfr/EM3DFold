@@ -7,7 +7,7 @@ import argparse
 import tempfile
 from pathlib import Path
 
-from em3dfold.io.pdbio import fix_quotes
+from em3dfold.io.pdbio import fix_quotes, read_pdb, chains_atom_pos_to_pdb
 from em3dfold.io.seqio import read_fasta
 from em3dfold.utils.misc_utils import pjoin, abspath
 from em3dfold.utils.torch_utils import clear_cuda_cache
@@ -22,7 +22,13 @@ def add_args(parser):
     parser.add_argument("--rna", "-r", help="Input rna sequence")
     parser.add_argument("--dna", "-d", help="Input dna sequence")
     # Add protein chain templates, e.g. predicted AlphaFold models
-    parser.add_argument("--protein-chain", "-pc", help="Input protein chain template")
+    parser.add_argument(
+        "--protein-template",
+        "-pt",
+        nargs="+",
+        default=None,
+        help="Input protein template file(s); each protein chain will be split into temp_dir/templates/template_x_chain_x.cif",
+    )
     parser.add_argument("--output", "-o", help="Output directory", required=True)
     parser.add_argument("--device", "--gpu", help="GPU device, default = '0'", default="0")
     parser.add_argument(
@@ -219,6 +225,65 @@ def _prepare_temp_dir(out_dir, temp_root=None, use_system_temp=False):
     return abspath(temp_dir)
 
 
+def _extract_protein_template_chains(template_paths, temp_dir):
+    import numpy as np
+
+    template_dir = pjoin(temp_dir, "templates")
+    if os.path.exists(template_dir):
+        shutil.rmtree(template_dir)
+    os.makedirs(template_dir, exist_ok=True)
+
+    written_paths = []
+    for template_idx, template_path in enumerate(template_paths):
+        template_path = abspath(template_path)
+        if not os.path.exists(template_path):
+            raise FileNotFoundError(f"Protein template file not found: {template_path}")
+
+        atom_pos, atom_mask, res_type, res_idx, chain_idx, bfactor = read_pdb(
+            template_path,
+            keep_valid=False,
+            return_bfactor=True,
+        )
+
+        protein_mask = res_type < 20
+        if not np.any(protein_mask):
+            print(f"# No protein residues found in template {template_path}, skip")
+            continue
+
+        atom_pos = atom_pos[protein_mask]
+        atom_mask = atom_mask[protein_mask]
+        res_type = res_type[protein_mask]
+        res_idx = res_idx[protein_mask]
+        chain_idx = chain_idx[protein_mask]
+        bfactor = bfactor[protein_mask]
+
+        unique_chain_indices = np.unique(chain_idx)
+        for chain_local_idx, source_chain_idx in enumerate(unique_chain_indices):
+            chain_mask = chain_idx == source_chain_idx
+            output_path = pjoin(
+                template_dir,
+                f"template_{template_idx}_chain_{chain_local_idx}.cif",
+            )
+            chains_atom_pos_to_pdb(
+                output_path,
+                chains_atom_pos=[atom_pos[chain_mask]],
+                chains_atom_mask=[atom_mask[chain_mask]],
+                chains_res_type=[res_type[chain_mask]],
+                chains_res_idx=[res_idx[chain_mask]],
+                chains_idx=[0],
+                chains_bfactor=[bfactor[chain_mask]],
+                suffix="cif",
+            )
+            written_paths.append(output_path)
+            print(f"# Write protein template chain to {output_path}")
+
+    if written_paths:
+        print(f"# Extracted {len(written_paths)} protein template chains into {template_dir}")
+    else:
+        print("# No protein template chains were extracted")
+    return written_paths
+
+
 def _has_cli_sequence_arg(input_seq_path):
     return input_seq_path is not None and str(input_seq_path).strip() != ""
 
@@ -408,6 +473,9 @@ def main(args):
     print(f"# Pred weights dir: {pred_weights_dir}")
     print(f"# inferlm weights dir: {all_atom_weights_dir}")
     print(f"# Temp root dir: {temp_dir}")
+
+    if args.protein_template:
+        _extract_protein_template_chains(args.protein_template, temp_dir)
 
     has_protein_arg = _has_cli_sequence_arg(args.protein)
     has_rna_arg = _has_cli_sequence_arg(args.rna)

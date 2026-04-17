@@ -1,5 +1,16 @@
 import numpy as np
-from numba import jit, prange
+from numba import jit, prange, get_num_threads, set_num_threads
+
+
+NUMBA_INTERP_MAX_THREADS = 4
+
+
+def _configure_numba_interp_threads():
+    # Keep interpolation bounded so it does not oversubscribe the machine.
+    set_num_threads(min(NUMBA_INTERP_MAX_THREADS, get_num_threads()))
+
+
+_configure_numba_interp_threads()
 
 
 @jit(nopython=True)
@@ -35,11 +46,11 @@ class Interp3d:
         return self.mapout
 
     @staticmethod
-    @jit(parallel=False)
+    @jit(nopython=True, parallel=True)
     def _cubic_interp(mapin, zpix, ypix, xpix, apix, shiftz, shifty, shiftx, nz, ny, nx, pextz, pexty, pextx, mapout):
         for indz in prange(pextz):  # 0 ~ pextz-1
-            for indy in prange(pexty):  # 0 ~ pexty-1
-                for indx in prange(pextx):  # 0 ~ pextx-1
+            for indy in range(pexty):  # 0 ~ pexty-1
+                for indx in range(pextx):  # 0 ~ pextx-1
                     gx = (indx * apix + shiftx) / xpix
                     gy = (indy * apix + shifty) / ypix
                     gz = (indz * apix + shiftz) / zpix
@@ -53,13 +64,15 @@ class Interp3d:
                         _get_w(gz, wz)
                         _get_w(gy, wy)
                         _get_w(gx, wx)
+                        value = 0.0
                         for i in range(4):
                             for j in range(4):
                                 for k in range(4):
                                     if (intz + i - 1 >= 0 and intz + i - 1 < nz and
                                         inty + j - 1 >= 0 and inty + j - 1 < ny and
                                         intx + k - 1 >= 0 and intx + k - 1 < nx):
-                                        mapout[indz, indy, indx] += wz[i] * wy[j] * wx[k] * mapin[intz + i - 1, inty + j - 1, intx + k - 1]
+                                        value += wz[i] * wy[j] * wx[k] * mapin[intz + i - 1, inty + j - 1, intx + k - 1]
+                        mapout[indz, indy, indx] = value
         return mapout
 
     def inverse_cubic(self, mapin, zpix, ypix, xpix, zpix_o, ypix_o, xpix_o, shiftz, shifty, shiftx, nz, ny, nx):
@@ -74,11 +87,11 @@ class Interp3d:
         return self.mapout
 
     @staticmethod
-    @jit(parallel=False)
+    @jit(nopython=True, parallel=True)
     def _inverse_cubic_interp(mapin, zpix, ypix, xpix, zpix_o, ypix_o, xpix_o, shiftz, shifty, shiftx, nz, ny, nx, pextz, pexty, pextx, mapout):
         for indz in prange(pextz):  # 0 ~ pextz-1
-            for indy in prange(pexty):  # 0 ~ pexty-1
-                for indx in prange(pextx):  # 0 ~ pextx-1
+            for indy in range(pexty):  # 0 ~ pexty-1
+                for indx in range(pextx):  # 0 ~ pextx-1
                     gx = (indx * xpix_o + shiftx) / xpix
                     gy = (indy * ypix_o + shifty) / ypix
                     gz = (indz * zpix_o + shiftz) / zpix
@@ -92,13 +105,15 @@ class Interp3d:
                         _get_w(gz, wz)
                         _get_w(gy, wy)
                         _get_w(gx, wx)
+                        value = 0.0
                         for i in range(4):
                             for j in range(4):
                                 for k in range(4):
                                     if (intz + i - 1 >= 0 and intz + i - 1 < nz and
                                         inty + j - 1 >= 0 and inty + j - 1 < ny and
                                         intx + k - 1 >= 0 and intx + k - 1 < nx):
-                                        mapout[indz, indy, indx] += wz[i] * wy[j] * wx[k] * mapin[intz + i - 1, inty + j - 1, intx + k - 1]
+                                        value += wz[i] * wy[j] * wx[k] * mapin[intz + i - 1, inty + j - 1, intx + k - 1]
+                        mapout[indz, indy, indx] = value
         return mapout
 
     def del_mapout(self):
