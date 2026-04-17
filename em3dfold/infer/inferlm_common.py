@@ -14,6 +14,8 @@ from em3dfold.polymer_utils.polymer import get_polymer_from_file_path
 from em3dfold.utils.misc_utils import abspath, pjoin
 from em3dfold.utils.torch_utils import clear_cuda_cache, seed_everything
 
+EM_WEIGHTS_ENV_VAR = "EM_WEIGHTS_DIR"
+
 
 def load_model_bundle(config_path):
     cfg = OmegaConf.to_container(OmegaConf.load(config_path), resolve=True)
@@ -22,6 +24,35 @@ def load_model_bundle(config_path):
     model_class = getattr(module, model_cfg["class_name"])
     model_args = dict(model_cfg.get("args", {}))
     return model_class, model_args
+
+
+def _resolve_env_weights_root():
+    env_value = os.environ.get(EM_WEIGHTS_ENV_VAR)
+    if env_value is None or str(env_value).strip() == "":
+        return None
+    return os.path.realpath(os.path.expanduser(env_value))
+
+
+def _resolve_all_atom_model_dir(model_dir, script_dir):
+    if model_dir is not None:
+        return abspath(model_dir)
+
+    env_root = _resolve_env_weights_root()
+    if env_root is not None:
+        candidates = [
+            os.path.join(env_root, "weights", "cpx", "model_all_atom"),
+            os.path.join(env_root, "cpx", "model_all_atom"),
+            os.path.join(env_root, "model_all_atom"),
+        ]
+        for candidate in candidates:
+            if os.path.exists(candidate):
+                return abspath(candidate)
+
+        if os.path.basename(env_root) == "weights":
+            return abspath(os.path.join(env_root, "cpx", "model_all_atom"))
+        return abspath(os.path.join(env_root, "weights", "cpx", "model_all_atom"))
+
+    return pjoin(script_dir, "..", "weights", "model_all_atom")
 
 
 def prepare_common_args(parser):
@@ -33,7 +64,7 @@ def prepare_common_args(parser):
         "--model-dir",
         "-m",
         help="Where the model weights are",
-        default=pjoin(script_dir, "..", "weights", "model_all_atom"),
+        default=None,
     )
     parser.add_argument("--output-dir", "-o", default=".", help="Where to save the results")
     parser.add_argument("--device", default="cpu", help="Which device to run on")
@@ -403,6 +434,9 @@ def run_main(args, model_class, model_args, run_inference_fn):
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
     seed_everything(42)
+
+    script_dir = abspath(os.path.dirname(__file__))
+    args.model_dir = _resolve_all_atom_model_dir(args.model_dir, script_dir)
 
     if not hasattr(args, "prev_recycle_state"):
         args.prev_recycle_state = None

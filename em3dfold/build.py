@@ -12,6 +12,8 @@ from em3dfold.io.seqio import read_fasta
 from em3dfold.utils.misc_utils import pjoin, abspath
 from em3dfold.utils.torch_utils import clear_cuda_cache
 
+EM_WEIGHTS_ENV_VAR = "EM_WEIGHTS_DIR"
+
 
 def add_args(parser):
     parser.add_argument("--map", "-m", help="Input map", required=True)
@@ -149,10 +151,59 @@ def _normalize_torch_device(device):
     return device
 
 
-def _resolve_lm_weights_dir(lm_weights_dir):
-    if not lm_weights_dir:
+def _resolve_env_weights_root():
+    env_value = os.environ.get(EM_WEIGHTS_ENV_VAR)
+    if env_value is None or str(env_value).strip() == "":
         return None
-    return Path(lm_weights_dir).expanduser().resolve()
+    return Path(env_value).expanduser().resolve()
+
+
+def _first_existing_path_obj(*paths):
+    for path in paths:
+        if path is not None and path.exists():
+            return path.resolve()
+    return None
+
+
+def _resolve_pred_weights_dir(pred_weights_dir, script_dir):
+    if pred_weights_dir:
+        return abspath(pred_weights_dir)
+
+    env_root = _resolve_env_weights_root()
+    if env_root is not None:
+        resolved = _first_existing_path_obj(
+            env_root / "weights",
+            env_root,
+            env_root.parent / "weights" if env_root.name == "lm_weights" else None,
+        )
+        if resolved is not None:
+            return str(resolved)
+        if env_root.name == "weights":
+            return str(env_root)
+        return str((env_root / "weights").resolve())
+
+    return pjoin(script_dir, "weights")
+
+
+def _resolve_lm_weights_dir(lm_weights_dir):
+    if lm_weights_dir:
+        return Path(lm_weights_dir).expanduser().resolve()
+
+    env_root = _resolve_env_weights_root()
+    if env_root is None:
+        return None
+
+    resolved = _first_existing_path_obj(
+        env_root / "lm_weights",
+        env_root if env_root.name == "lm_weights" else None,
+        env_root.parent / "lm_weights" if env_root.name == "weights" else None,
+    )
+    if resolved is not None:
+        return resolved
+
+    if env_root.name == "weights":
+        return (env_root.parent / "lm_weights").resolve()
+    return (env_root / "lm_weights").resolve()
 
 
 def _prepare_temp_dir(out_dir, temp_root=None, use_system_temp=False):
@@ -342,11 +393,7 @@ def main(args):
 
     script_dir = os.path.dirname(__file__)
     inferlm_v3x_model_config = pjoin(script_dir, "infer", "config", "model_v3x.yaml")
-    weights_root_dir = (
-        abspath(args.pred_weights_dir)
-        if args.pred_weights_dir is not None
-        else pjoin(script_dir, "weights")
-    )
+    weights_root_dir = _resolve_pred_weights_dir(args.pred_weights_dir, script_dir)
     pred_weights_dir = weights_root_dir
     all_atom_weights_dir = pjoin(weights_root_dir, "cpx", "model_all_atom")
 

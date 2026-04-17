@@ -6,6 +6,9 @@ EM3DFold is a software package for automatic protein, RNA, and DNA (and small mo
 ## Requirements
 **Platform**: Linux.
 
+> [!NOTE]
+> To use EM3DFold on Windows, you may install a Linux system via [Windows WSL](https://learn.microsoft.com/en-us/windows/wsl/install).
+
 **GPU**: A GPU with at least 12 GB VRAM is required.
 
 **CUDA**: CUDA >= 11.8 is required.
@@ -39,10 +42,13 @@ cd EM3DFold-main
 We write the tedious installation steps into one script, so installation is one command like:
 ```bash
 # Make sure you are in the EM3DFold directory
-bash scripts/install.sh /path/to/your/conda
+bash scripts/install.sh
 ```
 
 If you are familiar with conda/pip/shell or you encounter problems when running the above command, please execute commands in `install.sh` step-by-step.
+
+> [!NOTE]
+> If the script fails at some steps, please run the steps manually.
 
 #### 3. Download pretrained weights
 
@@ -50,8 +56,22 @@ The provided `download.sh` scripts automatically downloads the pretrained weight
 
 ```bash
 # Download all weights
-bash scripts/download.sh /path/to/save/weights/
+bash scripts/download.sh /path/to/weights/
+
+# After download weights, the conda env need to be refreshed
+conda deactivate
+conda activate em3dfold
+
+# Check the EM_WEIGHTS_DIR
+echo $EM_WEIGHTS_DIR
 ```
+
+> [!NOTE]
+> If downloading fails, download the weights manually. 
+> If the script did not automatically write EM_WEIGHTS_DIR, please run it manually:
+> ```bash
+> conda env config vars set EM_WEIGHTS_DIR=/path/to/weights -n em3dfold
+>```
 
 ## Usage
 Running EM3DFold is straight forward with one command like
@@ -63,6 +83,11 @@ em3dfold build --map/-m MAP.mrc \
     --protein-template/-pt PROTEIN_TEMPLATE_0.cif [...] \
     --output OUT \
     --device 0
+```
+
+To explicitly set the weights dir:
+```bash
+EM_WEIGHTS_DIR=/path/to/weights em3dfold build --map ...
 ```
 
 - The cryo-EM density map and output directory are **required**.
@@ -112,12 +137,6 @@ em3dfold build --map MAP.mrc \
   --output out_protein \ 
   --device 0
 ```
-
-## Notes
-- Sequence branches are only enabled when the corresponding CLI argument is explicitly provided and the formatted sequence file is non-empty.
-- Protein and nucleic-acid chains are modeled together in a unified `inferlm_v2` run.
-- For nucleic acids, EM3DFold can compare network-predicted residue logits and sampled `na_aa_logits`, and use the higher-scoring alignment.
-- The main output model is written to `OUT/output.cif`.
 
 ## Trouble shooting
 - **No module named "xxx"**: package `xxx` is missing in your current environment. Install it with `pip install xxx` or `conda install xxx`.

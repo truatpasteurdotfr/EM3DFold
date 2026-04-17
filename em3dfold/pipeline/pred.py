@@ -23,6 +23,8 @@ from em3dfold.utils.cryo_utils import (
 from em3dfold.utils.misc_utils import pjoin, abspath
 from em3dfold.utils.torch_utils import clear_cuda_cache
 
+EM_WEIGHTS_ENV_VAR = "EM_WEIGHTS_DIR"
+
 
 def seed_torch(seed=42):
     random.seed(seed)
@@ -35,6 +37,29 @@ def seed_torch(seed=42):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.enabled = True
     os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+
+
+def _resolve_env_weights_root():
+    env_value = os.environ.get(EM_WEIGHTS_ENV_VAR)
+    if env_value is None or str(env_value).strip() == "":
+        return None
+    return os.path.realpath(os.path.expanduser(env_value))
+
+
+def _resolve_model_dir(model_dir, dir_script):
+    if model_dir is not None:
+        return abspath(model_dir)
+
+    env_root = _resolve_env_weights_root()
+    if env_root is not None:
+        candidate_weights_dir = os.path.join(env_root, "weights")
+        if os.path.exists(candidate_weights_dir):
+            return candidate_weights_dir
+        if os.path.exists(env_root):
+            return env_root
+        return candidate_weights_dir
+
+    return pjoin(dir_script, "..", "weights")
 
 
 def load_model_and_run_inference_on_map(model_file, map_file, **kwargs):
@@ -256,10 +281,7 @@ def main(args):
     dir_map = abspath(args.input)
     dir_out = abspath(args.output)
     contour = args.contour
-    if args.model is not None:
-        dir_model = abspath(args.model)
-    else:
-        dir_model = pjoin(dir_script, "..", "weights")
+    dir_model = _resolve_model_dir(args.model, dir_script)
     print(f"# Specify model path to {dir_model}")
 
     if not args.protein and not args.nucleic:
@@ -356,7 +378,7 @@ def add_args(parser):
         type=str,
         dest="model",
         help="Directory to deep learning models (expects subdirs: na/, protein/)",
-        default=pjoin(script_dir, "..", "weights"),
+        default=None,
     )
     parser.add_argument("--stride", "-s", type=int, help="Stride for splitting chunks", default=16)
     parser.add_argument("--protein", action="store_true", help="Predict protein CA map (ca.mrc)")
