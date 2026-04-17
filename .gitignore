@@ -1,0 +1,77 @@
+# Demo tests
+test/
+demo/
+
+# Training outputs
+logs*/
+ckpt*/
+*.log 
+outputs/
+runs/
+tmp/
+temp/
+artifacts/
+checkpoints/
+
+# Training scripts
+train/cmds
+train/xx*
+
+# Dummy data
+demo*
+demo*/
+*.mrc
+*.cif
+*.pdb
+*.npz
+*.npy
+*.dat
+*.out
+
+# Python
+**/__pycache__/
+__pycache__/
+*.py[cod]
+*.pyd
+*.so
+.Python
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.nox/
+.tox/
+.coverage
+.coverage.*
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Logs
+*.log
+logs/
+
+# Local outputs
+ckpt/
+wandb/
+lightning_logs/
+tensorboard/
+tb/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

@@ -1,0 +1,17 @@
+# Flash attention
+# page url:
+# https://github.com/Dao-AILab/flash-attention/releases/tag/v2.3.2
+# download url:
+# https://github.com/Dao-AILab/flash-attention/releases/download/v2.3.2/
+# version: 
+# flash_attn-2.3.2+cu118torch2.1cxx11abiFALSE-cp310-cp310-linux_x86_64.whl
+# flash_attn-2.3.2+cu118torch2.1cxx11abiTrue-cp310-cp310-linux_x86_64.whl
+
+# How to install flash attention package
+# 1. Make sure you have create the conda env and intall all the packages listed in env.yml
+# 2. Check whether PyTorch is compiled with CXX11 ABI
+python -c "import torch; print(torch.compiled_with_cxx11_abi())"
+# 3. If `FALSE/TRUE`, install the `FALSE/TRUE` version using pip
+pip install flash_attn-2.3.2+cu118torch2.1cxx11abiFALSE-cp310-cp310-linux_x86_64.whl
+# or 
+pip install flash_attn-2.3.2+cu118torch2.1cxx11abiTRUE-cp310-cp310-linux_x86_64.whl
