@@ -237,6 +237,8 @@ def _prepare_ldps(map_path, resolution, threshold, threshold_ratio, device, angl
         resol=resolution,
         apix=inferred_apix,
         threshold=threshold,
+        rshift=3.0,
+        rmerge=1.0,
         angle_step=angle_step,
         fgrid=fgrid,
         sgrid=sgrid,
@@ -423,28 +425,48 @@ def run_template_domain_fitting(
         "apix": float(params.apix),
         "threshold": float(params.threshold),
         "threshold_ratio": None if threshold_ratio is None else float(threshold_ratio),
+        "grouped_input_path": None,
+        "grouped_fitted_path": None,
         "chains": [],
     }
 
+    all_domain_records = []
+    chain_summaries = []
     for chain_record in chain_records:
         domain_result, domain_records = _split_chain_to_domains(chain_record, domain_dir)
-        grouped_input_path = pjoin(
-            domain_dir,
-            (
-                f"template_{chain_record['template_index']}_"
-                f"chain_{chain_record['chain_local_index']}_domains_grouped.pdb"
-            ),
-        )
-        grouped_fitted_path = pjoin(
-            fitted_dir,
-            (
-                f"template_{chain_record['template_index']}_"
-                f"chain_{chain_record['chain_local_index']}_domains_grouped_fitted.pdb"
-            ),
-        )
-        _write_domain_group_pdb(domain_records, grouped_input_path)
+        chain_summary = {
+            **chain_record,
+            "fragment_list": domain_result.get("fragment_list", []),
+            "small_domain_list": domain_result.get("small_domain_list", []),
+            "large_domain_list": domain_result.get("large_domain_list", []),
+            "grouped_input_path": None,
+            "grouped_fitted_path": None,
+            "domains": [],
+        }
+        for domain_record in domain_records:
+            chain_summary["domains"].append(
+                {
+                    "domain_index": domain_record["domain_index"],
+                    "domain_string": domain_record["domain_string"],
+                    "domain_path": domain_record["domain_path"],
+                    "fitted_path": None,
+                    "score": None,
+                    "solution": None,
+                    "resolved": False,
+                }
+            )
+        chain_summaries.append(chain_summary)
+        all_domain_records.extend(domain_records)
+
+    if all_domain_records:
+        grouped_input_path = pjoin(domain_dir, "all_domains_grouped.pdb")
+        grouped_fitted_path = pjoin(fitted_dir, "all_domains_grouped_fitted.pdb")
+        summary["grouped_input_path"] = grouped_input_path
+        summary["grouped_fitted_path"] = grouped_fitted_path
+
+        _write_domain_group_pdb(all_domain_records, grouped_input_path)
         fit_results = _fit_domain_group(
-            domain_records,
+            all_domain_records,
             grouped_input_path,
             grouped_fitted_path,
             fitted_dir,
@@ -452,27 +474,28 @@ def run_template_domain_fitting(
             ldps_dens,
             params,
         )
-        chain_summary = {
-            **chain_record,
-            "fragment_list": domain_result.get("fragment_list", []),
-            "small_domain_list": domain_result.get("small_domain_list", []),
-            "large_domain_list": domain_result.get("large_domain_list", []),
-            "grouped_input_path": grouped_input_path,
-            "grouped_fitted_path": grouped_fitted_path,
-            "domains": [],
-        }
 
-        for domain_record, fit_result in zip(domain_records, fit_results, strict=True):
-            chain_summary["domains"].append(
-                {
-                    "domain_index": domain_record["domain_index"],
-                    "domain_string": domain_record["domain_string"],
-                    "domain_path": domain_record["domain_path"],
-                    **fit_result,
-                }
+        fit_result_by_key = {}
+        for domain_record, fit_result in zip(all_domain_records, fit_results, strict=True):
+            record_key = (
+                domain_record["template_index"],
+                domain_record["chain_local_index"],
+                domain_record["domain_index"],
             )
+            fit_result_by_key[record_key] = fit_result
 
-        summary["chains"].append(chain_summary)
+        for chain_summary in chain_summaries:
+            chain_summary["grouped_input_path"] = grouped_input_path
+            chain_summary["grouped_fitted_path"] = grouped_fitted_path
+            for domain_summary in chain_summary["domains"]:
+                record_key = (
+                    chain_summary["template_index"],
+                    chain_summary["chain_local_index"],
+                    domain_summary["domain_index"],
+                )
+                domain_summary.update(fit_result_by_key[record_key])
+
+    summary["chains"] = chain_summaries
 
     summary_path = pjoin(output_dir, "fit_summary.json")
     with open(summary_path, "w", encoding="utf-8") as handle:

@@ -744,6 +744,8 @@ def main(args):
         fit_args.output = fit_output_dir
         fit_args.resolution = 6.0
         fit_args.threshold = 15.0
+        fit_args.rshift = 3.0
+        fit_args.rmerge = 1.0
         fit_args.device = args.device
         fit_args.angle_step = 18.0
         fit_args.fgrid = 3.0
