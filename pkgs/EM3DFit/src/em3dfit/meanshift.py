@@ -11,7 +11,11 @@ from scipy.spatial import cKDTree
 
 from em3dfit.config import Params
 from em3dfit.types import MRCMap
-from em3dfit.utils import log_message as _base_log_message, stage_timer as _base_stage_timer
+from em3dfit.utils import (
+    log_message as _base_log_message,
+    normalize_device_spec,
+    stage_timer as _base_stage_timer,
+)
 
 LOG_STAGE = "Meanshift"
 log_message = partial(_base_log_message, stage=LOG_STAGE)
@@ -196,7 +200,7 @@ def extract_ldps(mrc: MRCMap, params: Params) -> tuple[np.ndarray, np.ndarray, n
         backend = "torch" if torch.cuda.is_available() else "scipy"
 
     if backend == "torch":
-        device = params.device
+        device = normalize_device_spec(params.device)
         if device == "auto":
             device = "cuda" if torch.cuda.is_available() else "cpu"
         log_message(f"mean-shift backend: torch ({device})")

@@ -14,7 +14,12 @@ from scipy import fft, ndimage as ndi, optimize
 from em3dfit.config import Params
 from em3dfit.score import euler_to_matrix
 from em3dfit.types import Chain
-from em3dfit.utils import log_message as _base_log_message, stage_timer as _base_stage_timer
+from em3dfit.utils import (
+    is_cuda_device_spec,
+    log_message as _base_log_message,
+    normalize_device_spec,
+    stage_timer as _base_stage_timer,
+)
 
 LOG_STAGE = "Rigid"
 log_message = partial(_base_log_message, stage=LOG_STAGE)
@@ -223,22 +228,23 @@ def _build_smoothed_grid_torch(
 
 
 def _rigid_device_name(params: Params) -> str:
+    requested_device = normalize_device_spec(params.device)
     if params.backend == "scipy":
         return "cpu"
     if params.backend == "torch":
-        if params.device == "cuda":
-            return "cuda"
+        if is_cuda_device_spec(requested_device):
+            return requested_device if torch.cuda.is_available() else "torch-cpu"
         return "torch-cpu"
-    if params.device == "cpu":
+    if requested_device == "cpu":
         return "torch-cpu"
-    if params.device == "cuda":
-        return "cuda" if torch.cuda.is_available() else "torch-cpu"
+    if is_cuda_device_spec(requested_device):
+        return requested_device if torch.cuda.is_available() else "torch-cpu"
     return "cuda" if torch.cuda.is_available() else "torch-cpu"
 
 
 def _torch_device_from_backend(rigid_device: str) -> torch.device | None:
-    if rigid_device == "cuda":
-        return torch.device("cuda")
+    if is_cuda_device_spec(rigid_device):
+        return torch.device(normalize_device_spec(rigid_device))
     if rigid_device == "torch-cpu":
         return torch.device("cpu")
     return None
@@ -903,7 +909,7 @@ def search_chain_poses(
     with stage_timer(f"chain {chain.index:02d} angle set"):
         angles = generate_angle_set(params.angle_step)
     log_message(f"chain {chain.index:02d} trying {len(angles)} rotations")
-    if params.device == "cuda" and context.rigid_device != "cuda":
+    if is_cuda_device_spec(params.device) and not is_cuda_device_spec(context.rigid_device):
         log_message(f"chain {chain.index:02d} requested cuda but falling back to {context.rigid_device}")
     log_message(f"chain {chain.index:02d} coarse rigid backend {context.rigid_device}")
     coarse_candidates: list[np.ndarray] = []

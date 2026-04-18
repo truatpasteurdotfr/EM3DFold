@@ -221,7 +221,7 @@ def _infer_map_apix_and_normalize(raw_map, normalize_mrc):
     return inferred_apix, normalize_mrc(raw_map, inferred_apix)
 
 
-def _prepare_ldps(map_path, resolution, threshold, device, angle_step, fgrid, sgrid, ntrans, ntop):
+def _prepare_ldps(map_path, resolution, threshold, threshold_ratio, device, angle_step, fgrid, sgrid, ntrans, ntop):
     modules = _load_em3dfit_modules()
     Params = modules["Params"]
     read_mrc = modules["read_mrc"]
@@ -247,7 +247,16 @@ def _prepare_ldps(map_path, resolution, threshold, device, angle_step, fgrid, sg
     )
 
     max_density = float(np.max(norm_map.data))
-    if params.threshold >= max_density:
+    if threshold_ratio is not None:
+        params.threshold = float(threshold_ratio) * max_density
+        print(
+            "# Fit threshold-ratio {:.3f} -> threshold {:.3f} from map max {:.3f}".format(
+                float(threshold_ratio),
+                params.threshold,
+                max_density,
+            )
+        )
+    elif params.threshold >= max_density:
         params.threshold = float(np.percentile(norm_map.data, 99.0))
         print(
             "# Fit threshold is above map max, fallback to p99 = {:.3f}".format(
@@ -372,6 +381,7 @@ def run_template_domain_fitting(
     *,
     resolution=5.0,
     threshold=20.0,
+    threshold_ratio=None,
     device="auto",
     angle_step=18.0,
     fgrid=3.0,
@@ -394,6 +404,7 @@ def run_template_domain_fitting(
         map_path=map_path,
         resolution=resolution,
         threshold=threshold,
+        threshold_ratio=threshold_ratio,
         device=device,
         angle_step=angle_step,
         fgrid=fgrid,
@@ -408,6 +419,8 @@ def run_template_domain_fitting(
         "output_dir": output_dir,
         "resolution": resolution,
         "apix": float(params.apix),
+        "threshold": float(params.threshold),
+        "threshold_ratio": None if threshold_ratio is None else float(threshold_ratio),
         "chains": [],
     }
 
@@ -473,6 +486,12 @@ def add_args(parser):
     parser.add_argument("--resolution", type=float, default=5.0, help="Map resolution for EM3DFit")
     parser.add_argument("--threshold", type=float, default=20.0, help="Density threshold for LDP extraction")
     parser.add_argument(
+        "--threshold-ratio",
+        type=float,
+        default=None,
+        help="If set, use threshold_ratio * max(map_value) instead of a fixed threshold",
+    )
+    parser.add_argument(
         "--device",
         default="auto",
         help="If GPU is requested (e.g. 0 or cuda), use torch+cuda; otherwise use scipy backend.",
@@ -492,6 +511,7 @@ def main(args):
         output_dir=args.output,
         resolution=args.resolution,
         threshold=args.threshold,
+        threshold_ratio=getattr(args, "threshold_ratio", None),
         device=args.device,
         angle_step=args.angle_step,
         fgrid=args.fgrid,

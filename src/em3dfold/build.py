@@ -737,7 +737,7 @@ def main(args):
         start = time.time()
         from em3dfold.pipeline import fit as template_fit
 
-        fit_output_dir = pjoin(out_dir, "template_fit")
+        fit_output_dir = pjoin(temp_dir, "template_fit")
         fit_args = argparse.Namespace()
         fit_args.protein_template = args.protein_template
         fit_args.map = fit_map_path

@@ -14,7 +14,11 @@ from em3dfit.mrc import normalize_mrc, read_mrc, write_mrc
 from em3dfit.pdbio import read_pdb, write_fitted_pdb, write_mcp_pdb, write_scored_pdb
 from em3dfit.rigid import build_initial_ldp_search_grid, build_initial_ldp_search_grid_ftmatch
 from em3dfit.score import score_chain_against_ldps
-from em3dfit.utils import log_message as _base_log_message, stage_timer as _base_stage_timer
+from em3dfit.utils import (
+    log_message as _base_log_message,
+    normalize_device_spec,
+    stage_timer as _base_stage_timer,
+)
 
 LOG_STAGE = "Cli"
 log_message = partial(_base_log_message, stage=LOG_STAGE)
@@ -32,6 +36,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("output_pdb")
     parser.add_argument("-apix", type=float, default=1.0)
     parser.add_argument("-thresh", dest="threshold", type=float, default=20.0)
+    parser.add_argument(
+        "--threshold-ratio",
+        type=float,
+        default=0.10,
+        help="Set threshold to threshold_ratio * max(map_value) after map normalization",
+    )
     parser.add_argument("-rshift", type=float, default=10.0)
     parser.add_argument("-rmerge", type=float, default=1.0)
     parser.add_argument("-filter", dest="filter_fraction", type=float, default=0.03)
@@ -71,7 +81,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mcp", action="store_true")
     parser.add_argument("--rigid", action="store_true", help="Run rigid fitting and greedy assembly.")
     parser.add_argument("--backend", choices=["auto", "torch", "scipy"], default="auto")
-    parser.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
+    parser.add_argument(
+        "--device",
+        default="auto",
+        help="Device selector: auto, cpu, cuda, cuda:N, or a bare GPU index such as 0",
+    )
     parser.add_argument("--grid-method", choices=["ftmatch", "smoothed"], default="ftmatch")
     parser.add_argument("--refine-method", choices=["Powell", "Nelder-Mead"], default="Powell")
     parser.add_argument("--write-search-grid-mrc")
@@ -82,6 +96,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    device = normalize_device_spec(args.device)
 
     params = Params(
         resol=args.resolution,
@@ -123,7 +138,7 @@ def main(argv: list[str] | None = None) -> int:
         flexible_cutoff_score=args.flexible_cutoff_score,
         flexible=not (args.no_flexible or args.rigid),
         backend=args.backend,
-        device=args.device,
+        device=device,
         grid_method=args.grid_method,
         refine_method=args.refine_method,
         search_grid_output_path=args.write_search_grid_mrc,
@@ -137,7 +152,13 @@ def main(argv: list[str] | None = None) -> int:
         norm_map = normalize_mrc(raw_map, params.apix)
     log_message(f"normalized map shape {norm_map.data.shape}, voxel size {np.asarray(norm_map.voxel_size)}")
     max_density = float(np.max(norm_map.data))
-    if params.threshold >= max_density:
+    if args.threshold_ratio is not None:
+        params.threshold = float(args.threshold_ratio) * max_density
+        log_message(
+            f"threshold-ratio {float(args.threshold_ratio):.3f} -> "
+            f"threshold {params.threshold:.3f} from map max {max_density:.3f}"
+        )
+    elif params.threshold >= max_density:
         adaptive = float(np.percentile(norm_map.data, 99.0))
         log_message(
             f"threshold {params.threshold:.3f} is above map max {max_density:.3f}; "
