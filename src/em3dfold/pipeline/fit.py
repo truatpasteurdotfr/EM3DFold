@@ -62,8 +62,10 @@ def _resolve_em3dfit_backend_and_device(device):
         if torch.cuda.is_available():
             return "torch", "cuda"
         return "scipy", "cpu"
-    if device.isdigit() or device.startswith("cuda"):
-        return "torch", "cuda"
+    if device.isdigit():
+        return "torch", f"cuda:{device}"
+    if device == "cuda" or device.startswith("cuda:"):
+        return "torch", device
     return "scipy", "cpu"
 
 
