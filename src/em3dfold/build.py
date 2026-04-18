@@ -62,7 +62,10 @@ def add_args(parser):
     skip_group.add_argument("--skip-infer-protein", action='store_true', help=argparse.SUPPRESS)
     skip_group.add_argument("--skip-infer-na",      action='store_true', help=argparse.SUPPRESS)
     skip_group.add_argument("--skip-infer-na-aa",   action='store_true', help=argparse.SUPPRESS)
-
+    # With templates
+    skip_group.add_argument("--skip-imp",  action='store_true', help=argparse.SUPPRESS)
+    skip_group.add_argument("--skip-fix",  action='store_true', help=argparse.SUPPRESS)
+    skip_group.add_argument("--skip-fit",  action='store_true', help=argparse.SUPPRESS)
     return parser
 
 
@@ -721,6 +724,38 @@ def main(args):
         shutil.copy(final_entropy, fo_entropy)
         fix_quotes(fo_entropy)
 
+    fit_output_dir = None
+    if args.protein_template and (not args.skip_fit):
+        fit_map_path = _first_existing_path(
+            pjoin(temp_dir, "format_map.mrc"),
+            args.map,
+        )
+        if fit_map_path is None or (not os.path.exists(fit_map_path)):
+            raise FileNotFoundError("Cannot find a density map for template domain fitting.")
+
+        print("# Run protein-template domain rigid fitting")
+        start = time.time()
+        from em3dfold.pipeline import fit as template_fit
+
+        fit_output_dir = pjoin(out_dir, "template_fit")
+        fit_args = argparse.Namespace()
+        fit_args.protein_template = args.protein_template
+        fit_args.map = fit_map_path
+        fit_args.output = fit_output_dir
+        fit_args.resolution = 6.0
+        fit_args.threshold = 15.0
+        fit_args.device = args.device
+        fit_args.angle_step = 18.0
+        fit_args.fgrid = 3.0
+        fit_args.sgrid = 2.0
+        fit_args.ntrans = 8
+        fit_args.ntop = 10
+        template_fit.main(fit_args)
+        end = time.time()
+        print("# Time = {:.4f}".format(end - start))
+    elif args.protein_template:
+        print("# Skip protein-template rigid fitting")
+
 
     # Remove temp files
     if not args.keep_temp_files:
@@ -739,6 +774,8 @@ def main(args):
         print("# You can find the final model at: {}".format(fo))
         if os.path.exists(fo_entropy):
             print("# The residue-type confidence file is at: {}".format(fo_entropy))
+        if fit_output_dir is not None and os.path.exists(fit_output_dir):
+            print("# The template rigid-fitting results are at: {}".format(fit_output_dir))
         if args.keep_temp_files:
             print("# Intermediate files are kept in: {}".format(temp_dir))
         print("#" + " " + "-" * 70)

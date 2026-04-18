@@ -430,6 +430,15 @@ def _finalize_domains(domains_out: Sequence[Fragment], residue_numbers: Sequence
     return domains
 
 
+def _finalize_fragments(fragments_out: Sequence[Fragment], residue_numbers: Sequence[int]) -> List[str]:
+    fragments: List[str] = []
+    for fragment in fragments_out:
+        fragment_str = _fragment_to_domain_string(fragment, residue_numbers)
+        if fragment_str:
+            fragments.append(fragment_str)
+    return fragments
+
+
 def _domain_string(domains: Sequence[str]) -> str:
     return "/".join(domains)
 
@@ -469,6 +478,11 @@ def _parse_chain_domains(records: Sequence[ResidueRecord]) -> Dict[str, object]:
     large_split_elapsed = time.perf_counter() - stage_start
 
     stage_start = time.perf_counter()
+    _log_stage(f"chain {chain_label}: finalize fragments")
+    fragment_strings = _finalize_fragments(large_fragments, residue_numbers)
+    fragment_finalize_elapsed = time.perf_counter() - stage_start
+
+    stage_start = time.perf_counter()
     _log_stage(f"chain {chain_label}: merge and finalize large_domain")
     large_domains = _finalize_domains(
         _merge_domains(
@@ -485,6 +499,10 @@ def _parse_chain_domains(records: Sequence[ResidueRecord]) -> Dict[str, object]:
     elapsed = time.perf_counter() - start_time
     return {
         "residue_count": len(records),
+        "fragment_list": fragment_strings,
+        "fragment": _domain_string(fragment_strings),
+        "small_domain_list": fragment_strings,
+        "small_domain": _domain_string(fragment_strings),
         "large_domain_list": large_domains,
         "large_domain": _domain_string(large_domains),
         "elapsed_seconds": elapsed,
@@ -493,62 +511,10 @@ def _parse_chain_domains(records: Sequence[ResidueRecord]) -> Dict[str, object]:
             "contact_matrix": contact_elapsed,
             "secondary_structure": ss_elapsed,
             "large_split": large_split_elapsed,
+            "fragment_finalize": fragment_finalize_elapsed,
             "large_finalize": large_finalize_elapsed,
         },
     }
-
-
-def _add_small_domain_outputs(
-    chain_result: Dict[str, object],
-    records: Sequence[ResidueRecord],
-):
-    chain_label = records[0].chain_id
-    residue_numbers = [record.resseq for record in records]
-    coords = np.stack([record.coord_cb_or_ca for record in records], axis=0)
-    contact_matrix = _compute_contact_matrix(coords)
-    vsec = _assign_secondary_structure(records)
-
-    stage_start = time.perf_counter()
-    _log_stage(f"chain {chain_label}: split small_domain candidates")
-    small_fragments = _recursive_split(
-        contact_matrix,
-        residue_numbers,
-        use_secondary=True,
-        vsec=vsec,
-        aggressive=True,
-    )
-    _log_stage(
-        f"chain {chain_label}: small_domain candidate_count={len(small_fragments)}"
-    )
-    small_split_elapsed = time.perf_counter() - stage_start
-
-    stage_start = time.perf_counter()
-    _log_stage(f"chain {chain_label}: merge small_domain candidates")
-    merged_small_fragments = _merge_domains(
-        small_fragments,
-        contact_matrix,
-        residue_numbers,
-        max_iterations=64,
-        max_fragments_for_merge=64,
-        max_pair_checks_per_iteration=1024,
-        log_label=f"chain {chain_label}: small_domain",
-    )
-    small_merge_elapsed = time.perf_counter() - stage_start
-
-    stage_start = time.perf_counter()
-    _log_stage(f"chain {chain_label}: finalize small_domain")
-    small_domains = _finalize_domains(merged_small_fragments, residue_numbers)
-    small_finalize_elapsed = time.perf_counter() - stage_start
-
-    chain_result["small_domain_list"] = small_domains
-    chain_result["small_domain"] = _domain_string(small_domains)
-    chain_result["stage_seconds"]["small_split"] = small_split_elapsed
-    chain_result["stage_seconds"]["small_merge"] = small_merge_elapsed
-    chain_result["stage_seconds"]["small_finalize"] = small_finalize_elapsed
-    chain_result["elapsed_seconds"] += (
-        small_split_elapsed + small_merge_elapsed + small_finalize_elapsed
-    )
-    return chain_result
 
 
 def parse_unidoc_domains(
@@ -556,22 +522,17 @@ def parse_unidoc_domains(
     chain_id: Optional[str] = None,
     output_small_domain: bool = False,
 ) -> Dict[str, object]:
+    del output_small_domain
     _log_stage("load structure and extract chain records")
     chain_to_records = _extract_chain_records(structure_path)
     if chain_id is not None:
         if chain_id not in chain_to_records:
             raise ValueError(f"Chain {chain_id!r} not found in {structure_path}")
-        result = _parse_chain_domains(chain_to_records[chain_id])
-        if output_small_domain:
-            result = _add_small_domain_outputs(result, chain_to_records[chain_id])
-        return {chain_id: result}
+        return {chain_id: _parse_chain_domains(chain_to_records[chain_id])}
 
     output = {}
     for chain, records in chain_to_records.items():
-        chain_result = _parse_chain_domains(records)
-        if output_small_domain:
-            chain_result = _add_small_domain_outputs(chain_result, records)
-        output[chain] = chain_result
+        output[chain] = _parse_chain_domains(records)
     return output
 
 
@@ -590,7 +551,7 @@ def get_args():
     parser.add_argument(
         "--output-small-domain",
         action="store_true",
-        help="Also compute and output small_domain results. Default: disabled",
+        help="Deprecated. small_domain now aliases fragment and is always included.",
     )
     return parser.parse_args()
 
@@ -622,16 +583,14 @@ def main():
         stage_seconds = chain_result.get("stage_seconds", {})
         if stage_seconds:
             print(
-                "Chain {} stages prepare={:.4f} contact_matrix={:.4f} secondary_structure={:.4f} large_split={:.4f} small_split={:.4f} small_merge={:.4f} large_finalize={:.4f} small_finalize={:.4f}".format(
+                "Chain {} stages prepare={:.4f} contact_matrix={:.4f} secondary_structure={:.4f} large_split={:.4f} fragment_finalize={:.4f} large_finalize={:.4f}".format(
                     chain_id,
                     float(stage_seconds.get("prepare", 0.0)),
                     float(stage_seconds.get("contact_matrix", 0.0)),
                     float(stage_seconds.get("secondary_structure", 0.0)),
                     float(stage_seconds.get("large_split", 0.0)),
-                    float(stage_seconds.get("small_split", 0.0)),
-                    float(stage_seconds.get("small_merge", 0.0)),
+                    float(stage_seconds.get("fragment_finalize", 0.0)),
                     float(stage_seconds.get("large_finalize", 0.0)),
-                    float(stage_seconds.get("small_finalize", 0.0)),
                 )
             )
     print(f"Total elapsed_seconds={total_elapsed:.4f}")

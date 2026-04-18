@@ -257,10 +257,15 @@ def inference_protein_ca(dir_map, contour, dir_model, dir_out, data_params, test
     )
 
     mask = np.where(em_map <= contour, 0, 1).astype(np.int8)
-    out = mask * map_pred[1]
-    dir_map_out = os.path.join(dir_out, "ca.mrc")
-    write_map(dir_map_out, out.astype(np.float32), voxel_size, origin=origin)
-    print(f"# Write map to {dir_map_out}", flush=True)
+    ca_out = mask * map_pred[1]
+    ca_map_out = os.path.join(dir_out, "ca.mrc")
+    write_map(ca_map_out, ca_out.astype(np.float32), voxel_size, origin=origin)
+    print(f"# Write map to {ca_map_out}", flush=True)
+
+    backbone_out = mask * np.mean(map_pred[:3], axis=0)
+    backbone_map_out = os.path.join(dir_out, "mc.mrc")
+    write_map(backbone_map_out, backbone_out.astype(np.float32), voxel_size, origin=origin)
+    print(f"# Write map to {backbone_map_out}", flush=True)
 
 
 def main(args):
@@ -381,7 +386,7 @@ def add_args(parser):
         default=None,
     )
     parser.add_argument("--stride", "-s", type=int, help="Stride for splitting chunks", default=16)
-    parser.add_argument("--protein", action="store_true", help="Predict protein CA map (ca.mrc)")
+    parser.add_argument("--protein", action="store_true", help="Predict protein CA map (ca.mrc) and backbone map (backbone.mrc)")
     parser.add_argument("--nucleic", action="store_true", help="Predict nucleic maps (c4.mrc and logits.npz)")
     return parser
 

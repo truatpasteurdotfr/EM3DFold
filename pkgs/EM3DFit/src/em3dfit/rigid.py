@@ -223,6 +223,12 @@ def _build_smoothed_grid_torch(
 
 
 def _rigid_device_name(params: Params) -> str:
+    if params.backend == "scipy":
+        return "cpu"
+    if params.backend == "torch":
+        if params.device == "cuda":
+            return "cuda"
+        return "torch-cpu"
     if params.device == "cpu":
         return "torch-cpu"
     if params.device == "cuda":

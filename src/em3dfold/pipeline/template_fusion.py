@@ -2,7 +2,7 @@
 
 import argparse
 
-from em3dfold.pipeline.assemble import add_args, main
+from em3dfold.pipeline.template_fusion_impl import add_args, main
 
 
 if __name__ == "__main__":

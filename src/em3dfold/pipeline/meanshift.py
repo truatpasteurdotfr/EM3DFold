@@ -429,7 +429,7 @@ def extract_points(
         log_message(f"mean-shift backend: torch ({device})")
         if str(device).startswith("cuda"):
             log_message(
-                "WARNING torch GPU mean-shift may produce slightly different results from scipy and torch CPU implementations"
+                "torch GPU mean-shift may produce slightly different results from scipy and torch CPU implementations"
             )
             log_message("torch GPU mean-shift will use float64 and disable TF32 to better match CPU behavior")
         with stage_timer("mean-shift"):
