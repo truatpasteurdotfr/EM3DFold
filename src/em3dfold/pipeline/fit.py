@@ -37,6 +37,7 @@ def _load_em3dfit_modules():
     from em3dfit.meanshift import extract_ldps
     from em3dfit.mrc import normalize_mrc, read_mrc
     from em3dfit.pdbio import read_pdb as read_em3dfit_pdb
+    from em3dfit.pdbio import write_mcp_pdb
     from em3dfit.pdbio import write_fitted_pdb
 
     return {
@@ -46,6 +47,7 @@ def _load_em3dfit_modules():
         "normalize_mrc": normalize_mrc,
         "read_mrc": read_mrc,
         "read_em3dfit_pdb": read_em3dfit_pdb,
+        "write_mcp_pdb": write_mcp_pdb,
         "write_fitted_pdb": write_fitted_pdb,
     }
 
@@ -347,16 +349,19 @@ def _fit_domain_group(
         )
 
         if chain.solutions is None:
-            shutil.copy(domain_record["domain_path"], fitted_path)
             fit_results.append(
                 {
-                    "fitted_path": fitted_path,
+                    "fitted_path": None,
                     "score": None,
                     "solution": None,
                     "resolved": False,
                 }
             )
-            print(f"# Domain unresolved in grouped fitting, keep original at {fitted_path}")
+            print(
+                "# Domain unresolved in grouped fitting, skip fitted output for {}".format(
+                    domain_record["domain_path"]
+                )
+            )
             continue
 
         domain_model = read_em3dfit_pdb(domain_record["domain_path"])
@@ -416,6 +421,10 @@ def run_template_domain_fitting(
         ntrans=ntrans,
         ntop=ntop,
     )
+    modules = _load_em3dfit_modules()
+    initial_ldps_path = pjoin(output_dir, "initial_ldps.pdb")
+    modules["write_mcp_pdb"](initial_ldps_path, ldps, ldps_dens)
+    print(f"# Write initial LDPs to {initial_ldps_path}")
 
     chain_records = _extract_protein_template_chains(template_paths, chain_dir)
     summary = {
@@ -425,6 +434,7 @@ def run_template_domain_fitting(
         "apix": float(params.apix),
         "threshold": float(params.threshold),
         "threshold_ratio": None if threshold_ratio is None else float(threshold_ratio),
+        "initial_ldps_path": initial_ldps_path,
         "grouped_input_path": None,
         "grouped_fitted_path": None,
         "chains": [],
