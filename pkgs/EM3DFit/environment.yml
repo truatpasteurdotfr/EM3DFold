@@ -4,6 +4,6 @@ channels:
   - nvidia
   - conda-forge
 dependencies:
-  - python=3.10
+  - python
   - scipy
   - pytorch
