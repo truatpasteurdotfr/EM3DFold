@@ -582,9 +582,11 @@ def main(args):
 
     progress("EM3DFold build")
     progress(f"Output: {out_dir}")
+    progress(f"Temp dir: {temp_dir}")
     runtime_log_path = get_runtime_log_path()
     if runtime_log_path is not None:
         progress(f"Run log: {runtime_log_path}")
+    progress(f"Keep temporary files: {bool(args.keep_temp_files)}")
 
     has_protein_arg = _has_cli_sequence_arg(args.protein)
     has_rna_arg = _has_cli_sequence_arg(args.rna)
@@ -1050,18 +1052,17 @@ def main(args):
         if os.path.exists(temp_dir):
             shutil.rmtree(temp_dir)
 
-    progress("")
-    progress(f"Keep temporary files: {bool(args.keep_temp_files)}")
-
     if has_output:
+        progress("")
         progress("Modeling complete. EM3DFold finished successfully.")
+        progress("Thanks for waiting. Your model is ready.")
+        if args.keep_temp_files:
+            progress("Temporary files: {}".format(temp_dir))
         progress("Final model: {}".format(fo))
         if os.path.exists(fo_entropy):
             progress("Residue-type confidence file: {}".format(fo_entropy))
-        if args.keep_temp_files:
-            progress("Temporary files: {}".format(temp_dir))
-        progress("Thanks for waiting. Your model is ready.")
     else:
+        progress("")
         progress("EM3DFold did not produce a final model.")
         progress("Please check run.log for the stage that failed.")
 
