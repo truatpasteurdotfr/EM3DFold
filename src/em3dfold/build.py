@@ -938,7 +938,7 @@ def main(args):
     elif run_nucleic_input and final_denovo is not None and os.path.exists(final_denovo):
         assemble_candidate_paths.append(final_denovo)
 
-    if not args.skip_assemble:
+    if template_chain_paths and (not args.skip_assemble):
         ca_map_path = _first_existing_path(pjoin(temp_dir, "pred", "ca.mrc"))
         if assemble_candidate_paths and ca_map_path is not None and os.path.exists(ca_map_path):
             print("# Run assemble")
@@ -966,8 +966,10 @@ def main(args):
             print("# CA map is unavailable, skip assemble")
         else:
             print("# No structures are available for assemble")
-    else:
+    elif template_chain_paths:
         print("# Skip assemble")
+    else:
+        print("# No protein template input, skip template fix/imp/fit/assemble")
 
     final_output_path = None
     for candidate in [

@@ -27,7 +27,7 @@ from em3dfold.utils.cryo_utils import read_map
 from em3dfold.utils.misc_utils import abspath, pjoin
 
 
-SCORE_SCALE = 1000
+SCORE_SCALE = 100
 
 
 def print(*args, **kwargs):
