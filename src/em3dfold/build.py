@@ -30,31 +30,19 @@ def _collect_build_stage_order(template_chain_paths):
 
 def _announce_build_stage(stage_name, active_stages):
     stage_idx = active_stages.index(stage_name) + 1
-    progress(f"== Stage {stage_idx}/{len(active_stages)}: {stage_name} ==")
+    progress("")
+    progress(f"===== Stage {stage_idx}/{len(active_stages)}: {stage_name} =====")
 
 
-def _build_skip_summary(args, template_chain_paths):
-    skipped = []
-    if args.skip_preprocess:
-        skipped.append("preprocess")
-    if args.skip_cx:
-        skipped.append("pred")
-    if args.skip_denovo:
-        skipped.append("denovo")
+def _finish_build_stage(start_time=None, *, skipped=False):
+    elapsed = 0.0 if skipped or start_time is None else (time.time() - start_time)
+    suffix = " (skipped)" if skipped else ""
+    progress(f"Finished in {elapsed:.2f} seconds{suffix}")
 
-    if args.protein_template:
-        if not template_chain_paths:
-            skipped.extend(["fix", "imp", "fit", "assemble"])
-        else:
-            if args.skip_imp:
-                skipped.append("imp")
-            if args.skip_fix:
-                skipped.append("fix")
-            if args.skip_fit:
-                skipped.append("fit")
-            if args.skip_assemble:
-                skipped.append("assemble")
-    return skipped
+
+def _emit_stage_runtime_hint(stage_name):
+    if stage_name in {"pred", "denovo"}:
+        progress("This stage may take a few minutes if the map/structure is large.")
 
 
 def add_args(parser):
@@ -590,28 +578,13 @@ def main(args):
     if args.protein_template:
         template_chain_paths = _extract_protein_template_chains(args.protein_template, temp_dir)
 
-    active_stages = [
-        stage
-        for stage in _collect_build_stage_order(template_chain_paths)
-        if not (
-            (stage == "preprocess" and args.skip_preprocess)
-            or (stage == "pred" and args.skip_cx)
-            or (stage == "denovo" and args.skip_denovo)
-            or (stage == "fix" and args.skip_fix)
-            or (stage == "imp" and args.skip_imp)
-            or (stage == "fit" and args.skip_fit)
-            or (stage == "assemble" and args.skip_assemble)
-        )
-    ]
+    active_stages = _collect_build_stage_order(template_chain_paths)
 
     progress("EM3DFold build")
     progress(f"Output: {out_dir}")
     runtime_log_path = get_runtime_log_path()
     if runtime_log_path is not None:
         progress(f"Run log: {runtime_log_path}")
-    skipped_stages = _build_skip_summary(args, template_chain_paths)
-    if skipped_stages:
-        progress(f"Skipped: {', '.join(skipped_stages)}")
 
     has_protein_arg = _has_cli_sequence_arg(args.protein)
     has_rna_arg = _has_cli_sequence_arg(args.rna)
@@ -622,8 +595,8 @@ def main(args):
         )
 
     # preprocess
+    _announce_build_stage("preprocess", active_stages)
     if not args.skip_preprocess:
-        _announce_build_stage("preprocess", active_stages)
         start = time.time()
         from em3dfold.pipeline import preprocess
         preprocess_args = argparse.Namespace()
@@ -638,9 +611,9 @@ def main(args):
         preprocess.main(preprocess_args)
         end = time.time()
         print("# Time = {:.4f}".format(end - start))
-        progress("Finished")
+        _finish_build_stage(start)
     else:
-        progress("Skip preprocess")
+        _finish_build_stage(skipped=True)
 
 
     protein_seq_path = _resolve_nonempty_seq_path(
@@ -662,8 +635,9 @@ def main(args):
     run_nucleic_input = (rna_seq_path is not None) or (dna_seq_path is not None)
 
     # run segmentation
+    _announce_build_stage("pred", active_stages)
     if not args.skip_cx:
-        _announce_build_stage("pred", active_stages)
+        _emit_stage_runtime_hint("pred")
         run_nucleic = run_nucleic_input
         run_protein = run_protein_input
 
@@ -686,14 +660,16 @@ def main(args):
         end = time.time()
 
         print("# Time = {:.4f}".format(end - start))
-        progress("Finished")
+        _finish_build_stage(start)
     else:
-        progress("Skip pred")
+        _finish_build_stage(skipped=True)
 
 
     # ms
+    _announce_build_stage("denovo", active_stages)
     if not args.skip_denovo:
-        _announce_build_stage("denovo", active_stages)
+        stage_start = time.time()
+        _emit_stage_runtime_hint("denovo")
         if not args.skip_map_to_p:
             ############
             # Handle C4'
@@ -743,7 +719,7 @@ def main(args):
                 end = time.time()
                 print("# Time = {:.4f}".format(end - start))
         else:
-            progress("Skip map to p")
+            print("# Skip map to p")
 
 
         run_protein = run_protein_input and (not args.skip_infer_protein)
@@ -773,7 +749,7 @@ def main(args):
                 end = time.time()
                 print("# Time = {:.4f}".format(end - start))
             else:
-                progress("Skip protein LM embedding")
+                print("# Skip protein LM embedding")
 
             if run_na:
                 start = time.time()
@@ -790,7 +766,7 @@ def main(args):
                 end = time.time()
                 print("# Time = {:.4f}".format(end - start))
             else:
-                progress("Skip nucleic-acid LM embedding")
+                print("# Skip nucleic-acid LM embedding")
 
             initial_polymer_path = pjoin(temp_dir, "pred", "raw_polymer.pdb")
             _merge_initial_polymer_files(
@@ -835,11 +811,11 @@ def main(args):
             end = time.time()
             print("# Time = {:.4f}".format(end - start))
         else:
-            progress("Skip denovo")
-        progress("Finished")
+            print("# Skip denovo")
+        _finish_build_stage(stage_start)
 
     else:
-        progress("Skip denovo")
+        _finish_build_stage(skipped=True)
 
     final_denovo = _first_existing_path(
         pjoin(temp_dir, "denovo", "output.cif"),
@@ -860,12 +836,16 @@ def main(args):
     fit_output_dir = None
     fit_total_path = None
     template_candidate_paths = []
+    denovo_protein_chain_paths = []
+    shared_context = None
+    template_refine_skip_reason = None
+    template_refine_ready = False
 
     if template_chain_paths:
         if protein_seq_path is None:
-            progress("Protein sequence is unavailable, skip template fix/imp")
+            template_refine_skip_reason = "Protein sequence is unavailable, skip template fix/imp"
         elif final_denovo is None or (not os.path.exists(final_denovo)):
-            progress("De novo protein model is unavailable, skip template fix/imp")
+            template_refine_skip_reason = "De novo protein model is unavailable, skip template fix/imp"
         else:
             protein_chain_dir = pjoin(temp_dir, "template_refine", "denovo_protein_chains")
             denovo_protein_chain_paths = _split_structure_to_chains(
@@ -875,7 +855,7 @@ def main(args):
                 suffix="pdb",
             )
             if not denovo_protein_chain_paths:
-                progress("No protein chains were found in the de novo model, skip template fix/imp")
+                template_refine_skip_reason = "No protein chains were found in the de novo model, skip template fix/imp"
             else:
                 from em3dfold.template.pipeline import fix_pipeline, imp_pipeline
                 from em3dfold.template.pipeline.template_refine import build_template_refine_context
@@ -895,92 +875,101 @@ def main(args):
                 print(f"# Shared protein template count = {len(shared_context.templates)}")
 
                 if len(shared_context.templates) == 0:
-                    progress("No valid protein templates remain after filtering, skip template fix/imp")
+                    template_refine_skip_reason = "No valid protein templates remain after filtering, skip template fix/imp"
                 else:
-                    if not args.skip_fix:
-                        _announce_build_stage("fix", active_stages)
-                        start = time.time()
-                        fix_output_dir = pjoin(temp_dir, "fix")
-                        fix_args = argparse.Namespace(
-                            seq=protein_seq_path,
-                            chain=denovo_protein_chain_paths,
-                            template=template_chain_paths,
-                            lib=script_dir,
-                            output=fix_output_dir,
-                            verbose=False,
-                            debug=False,
-                        )
-                        fix_pipeline.run_with_context(fix_args, shared_context)
-                        end = time.time()
-                        print("# Time = {:.4f}".format(end - start))
-                        progress("Finished")
-                    else:
-                        progress("Skip fix")
+                    template_refine_ready = True
 
-                    if not args.skip_imp:
-                        _announce_build_stage("imp", active_stages)
-                        start = time.time()
-                        imp_output_dir = pjoin(temp_dir, "imp")
-                        imp_args = argparse.Namespace(
-                            seq=protein_seq_path,
-                            chain=denovo_protein_chain_paths,
-                            template=template_chain_paths,
-                            lib=script_dir,
-                            output=imp_output_dir,
-                            verbose=False,
-                            debug=False,
-                        )
-                        imp_pipeline.run_with_context(imp_args, shared_context)
-                        end = time.time()
-                        print("# Time = {:.4f}".format(end - start))
-                        progress("Finished")
-                    else:
-                        progress("Skip imp")
-    elif args.protein_template:
-        progress("No protein template chains were extracted, skip fix/imp/fit")
+    if template_chain_paths:
+        _announce_build_stage("fix", active_stages)
+        if args.skip_fix:
+            _finish_build_stage(skipped=True)
+        elif not template_refine_ready:
+            if template_refine_skip_reason:
+                print(f"# {template_refine_skip_reason}")
+            _finish_build_stage(skipped=True)
+        else:
+            start = time.time()
+            fix_output_dir = pjoin(temp_dir, "fix")
+            fix_args = argparse.Namespace(
+                seq=protein_seq_path,
+                chain=denovo_protein_chain_paths,
+                template=template_chain_paths,
+                lib=script_dir,
+                output=fix_output_dir,
+                verbose=False,
+                debug=False,
+            )
+            fix_pipeline.run_with_context(fix_args, shared_context)
+            end = time.time()
+            print("# Time = {:.4f}".format(end - start))
+            _finish_build_stage(start)
 
-    if template_chain_paths and (not args.skip_fit):
-        fit_map_path = _first_existing_path(
-            pjoin(temp_dir, "pred", "mc.mrc"),
-            pjoin(temp_dir, "format_map.mrc"),
-            args.map,
-        )
-        if fit_map_path is None or (not os.path.exists(fit_map_path)):
-            raise FileNotFoundError("Cannot find a density map for template domain fitting.")
+        _announce_build_stage("imp", active_stages)
+        if args.skip_imp:
+            _finish_build_stage(skipped=True)
+        elif not template_refine_ready:
+            if template_refine_skip_reason:
+                print(f"# {template_refine_skip_reason}")
+            _finish_build_stage(skipped=True)
+        else:
+            start = time.time()
+            imp_output_dir = pjoin(temp_dir, "imp")
+            imp_args = argparse.Namespace(
+                seq=protein_seq_path,
+                chain=denovo_protein_chain_paths,
+                template=template_chain_paths,
+                lib=script_dir,
+                output=imp_output_dir,
+                verbose=False,
+                debug=False,
+            )
+            imp_pipeline.run_with_context(imp_args, shared_context)
+            end = time.time()
+            print("# Time = {:.4f}".format(end - start))
+            _finish_build_stage(start)
 
         _announce_build_stage("fit", active_stages)
-        start = time.time()
-        from em3dfold.template.pipeline import fit_pipeline as template_fit
+        if args.skip_fit:
+            _finish_build_stage(skipped=True)
+        else:
+            fit_map_path = _first_existing_path(
+                pjoin(temp_dir, "pred", "mc.mrc"),
+                pjoin(temp_dir, "format_map.mrc"),
+                args.map,
+            )
+            if fit_map_path is None or (not os.path.exists(fit_map_path)):
+                raise FileNotFoundError("Cannot find a density map for template domain fitting.")
 
-        fit_output_dir = pjoin(temp_dir, "fit")
-        fit_args = argparse.Namespace()
-        fit_args.protein_template = template_chain_paths
-        fit_args.map = fit_map_path
-        fit_args.output = fit_output_dir
-        fit_args.resolution = 6.0
-        fit_args.threshold = 15.0
-        fit_args.threshold_ratio = 0.10
-        fit_args.rshift = 1.0
-        fit_args.rmerge = 1.0
-        fit_args.rmsdcut1 = 2.5
-        fit_args.rmsdcut2 = 5.0
-        fit_args.rigid_nleast = 5
-        fit_args.rigid_cutoff_score_early = -1.5
-        fit_args.rigid_cutoff_score_late = -0.5
-        fit_args.rigid_skip_short_residues = 50
-        fit_args.device = args.device
-        fit_args.angle_step = 18.0
-        fit_args.fgrid = 3.0
-        fit_args.sgrid = 2.0
-        fit_args.ntrans = 8
-        fit_args.ntop = 10
-        fit_summary = template_fit.main(fit_args)
-        fit_total_path = fit_summary.get("fitted_total_path")
-        end = time.time()
-        print("# Time = {:.4f}".format(end - start))
-        progress("Finished")
-    elif template_chain_paths:
-        progress("Skip fit")
+            start = time.time()
+            from em3dfold.template.pipeline import fit_pipeline as template_fit
+
+            fit_output_dir = pjoin(temp_dir, "fit")
+            fit_args = argparse.Namespace()
+            fit_args.protein_template = template_chain_paths
+            fit_args.map = fit_map_path
+            fit_args.output = fit_output_dir
+            fit_args.resolution = 6.0
+            fit_args.threshold = 15.0
+            fit_args.threshold_ratio = 0.10
+            fit_args.rshift = 1.0
+            fit_args.rmerge = 1.0
+            fit_args.rmsdcut1 = 2.5
+            fit_args.rmsdcut2 = 5.0
+            fit_args.rigid_nleast = 5
+            fit_args.rigid_cutoff_score_early = -1.5
+            fit_args.rigid_cutoff_score_late = -0.5
+            fit_args.rigid_skip_short_residues = 50
+            fit_args.device = args.device
+            fit_args.angle_step = 18.0
+            fit_args.fgrid = 3.0
+            fit_args.sgrid = 2.0
+            fit_args.ntrans = 8
+            fit_args.ntop = 10
+            fit_summary = template_fit.main(fit_args)
+            fit_total_path = fit_summary.get("fitted_total_path")
+            end = time.time()
+            print("# Time = {:.4f}".format(end - start))
+            _finish_build_stage(start)
 
     if imp_output_dir is not None:
         imp_trimmed = pjoin(imp_output_dir, "imp_chains_trimmed.cif")
@@ -1002,40 +991,40 @@ def main(args):
     elif run_nucleic_input and final_denovo is not None and os.path.exists(final_denovo):
         assemble_candidate_paths.append(final_denovo)
 
-    if template_chain_paths and (not args.skip_assemble):
-        ca_map_path = _first_existing_path(pjoin(temp_dir, "pred", "ca.mrc"))
-        if assemble_candidate_paths and ca_map_path is not None and os.path.exists(ca_map_path):
-            _announce_build_stage("assemble", active_stages)
-            start = time.time()
-            from em3dfold.pipeline import assemble as chain_assemble
-
-            assemble_output_dir = pjoin(temp_dir, "assemble")
-            assemble_args = argparse.Namespace(
-                structure_paths=assemble_candidate_paths,
-                ca_map_path=ca_map_path,
-                output=assemble_output_dir,
-                clash_threshold=0.10,
-                clash_distance=1.0,
-                clash_resolution=5.0,
-                map_percentile=99.9,
-                time_limit=120.0,
-                num_workers=4,
-                log_search_progress=False,
-            )
-            chain_assemble.main(assemble_args)
-            assembled_output_path = pjoin(assemble_output_dir, "assemble.cif")
-            end = time.time()
-            print("# Time = {:.4f}".format(end - start))
-            progress("Finished")
-            progress(f"Output: {assembled_output_path}")
-        elif assemble_candidate_paths:
-            progress("Skip assemble: CA map is unavailable")
+    if template_chain_paths:
+        _announce_build_stage("assemble", active_stages)
+        if args.skip_assemble:
+            _finish_build_stage(skipped=True)
         else:
-            progress("Skip assemble: no structures are available")
-    elif template_chain_paths:
-        progress("Skip assemble")
-    else:
-        progress("No protein template input")
+            ca_map_path = _first_existing_path(pjoin(temp_dir, "pred", "ca.mrc"))
+            if assemble_candidate_paths and ca_map_path is not None and os.path.exists(ca_map_path):
+                start = time.time()
+                from em3dfold.pipeline import assemble as chain_assemble
+
+                assemble_output_dir = pjoin(temp_dir, "assemble")
+                assemble_args = argparse.Namespace(
+                    structure_paths=assemble_candidate_paths,
+                    ca_map_path=ca_map_path,
+                    output=assemble_output_dir,
+                    clash_threshold=0.10,
+                    clash_distance=1.0,
+                    clash_resolution=5.0,
+                    map_percentile=99.9,
+                    time_limit=120.0,
+                    num_workers=4,
+                    log_search_progress=False,
+                )
+                chain_assemble.main(assemble_args)
+                assembled_output_path = pjoin(assemble_output_dir, "assemble.cif")
+                end = time.time()
+                print("# Time = {:.4f}".format(end - start))
+                _finish_build_stage(start)
+            elif assemble_candidate_paths:
+                print("# Skip assemble: CA map is unavailable")
+                _finish_build_stage(skipped=True)
+            else:
+                print("# Skip assemble: no structures are available")
+                _finish_build_stage(skipped=True)
 
     final_output_path = None
     for candidate in [
@@ -1058,29 +1047,19 @@ def main(args):
 
     # Remove temp files
     if not args.keep_temp_files:
-        progress("Remove temporary files")
         if os.path.exists(temp_dir):
             shutil.rmtree(temp_dir)
-        else:
-            pass
-    else:
-        progress("Keep temporary files")
+
+    progress("")
+    progress(f"Keep temporary files: {bool(args.keep_temp_files)}")
 
     if has_output:
         progress("Modeling complete. EM3DFold finished successfully.")
         progress("Final model: {}".format(fo))
         if os.path.exists(fo_entropy):
             progress("Residue-type confidence file: {}".format(fo_entropy))
-        if fix_output_dir is not None and os.path.exists(fix_output_dir):
-            progress("Template fix results: {}".format(fix_output_dir))
-        if imp_output_dir is not None and os.path.exists(imp_output_dir):
-            progress("Template imp results: {}".format(imp_output_dir))
-        if fit_output_dir is not None and os.path.exists(fit_output_dir):
-            progress("Template fit results: {}".format(fit_output_dir))
-        if assemble_output_dir is not None and os.path.exists(assemble_output_dir):
-            progress("Assembled selection results: {}".format(assemble_output_dir))
         if args.keep_temp_files:
-            progress("Intermediate files kept in: {}".format(temp_dir))
+            progress("Temporary files: {}".format(temp_dir))
         progress("Thanks for waiting. Your model is ready.")
     else:
         progress("EM3DFold did not produce a final model.")
