@@ -1,25 +1,19 @@
 import os
 import re
-import sys
 import time
 import builtins
-import tqdm
 import argparse
-import tempfile
-import subprocess
 import numpy as np
-from scipy.spatial import KDTree
 
 from em3dfold.io.pdbio import read_pdb, convert_to_chains, chains_atom_pos_to_pdb
 from em3dfold.io.seqio import read_fasta, std_aa_seq, nwalign_fast
 
-from em3dfold.template.utils.clashx import get_clash
-from em3dfold.template.utils.clash import clash_ratio, clash_flag
-from em3dfold.template.utils.cpsolver import solve
-from em3dfold.template.utils.misc_utils import pjoin, abspath
-from em3dfold.template.utils.residue_constants import index_to_restype_1
-from em3dfold.template.utils.cryo_utils import read_mrc
-from em3dfold.template.utils.grid import grid_value_interp
+from em3dfold.utils.clash_utils import get_clash
+from em3dfold.utils.cpsolver import solve
+from em3dfold.utils.misc_utils import pjoin, abspath
+from em3dfold.polymer_utils.residue_constants import index_to_restype_1
+from em3dfold.utils.cryo_utils import read_mrc
+from em3dfold.utils.grid_utils import grid_value_interp
 
 
 def print(*args, **kwargs):
@@ -101,8 +95,9 @@ def main(args):
         print("Found seq")
         print(seq)
 
-    # read fragments/domains
-    chain_built_type = [] # 0 for denovo, 1 for docked
+    # Read fragments/domains.
+    # built_type: 0 for denovo, 1 for template-fit/template-guided.
+    chain_built_type = []
     atom14_pos = []
     atom14_mask = []
     res_type = []
@@ -119,7 +114,7 @@ def main(args):
             res_type.append(__res_type)
             res_idx.append(__res_idx)
            
-            built_type = 0 if ("imp" in fpdb or "fix" in fpdb) else 1
+            built_type = 1 if ("imp" in fpdb or "fix" in fpdb) else 0
             built_type = [built_type] * (__chain_idx.max() + 1)
             built_type = np.asarray(built_type, dtype=np.int32)
 
@@ -298,19 +293,10 @@ def main(args):
     # detect clash
     # split to frags when have clash
     d_clash = 2.5
-    frag_len = 10
     frags = []
     frags_built_type = []
     for i in range(n_chain):
         isel = chain_idx == i
-        rsel = np.logical_not(isel)
-
-        ia, _ = clash_flag(
-            atom14_pos[isel][..., 1, :],
-            atom14_pos[rsel][..., 1, :],
-            r_clash=d_clash,
-        )
-
         isel_idxs = np.arange(len(atom14_pos), dtype=np.int32)[isel]
         frags.append(isel_idxs)
         frags_built_type.append(chain_built_type[i])
@@ -343,30 +329,6 @@ def main(args):
     r_clash_cutoff = 0.10
     rst = np.zeros((len(frags), len(frags)), dtype=np.int32)
     ts = time.time()
-    """
-    with tempfile.TemporaryDirectory() as temp_dir:
-        with open(pjoin(temp_dir, "frags.txt"), 'w') as f:
-            for frag in frags:
-                ca_pos = atom14_pos[frag][..., 1, :]
-                for i in range(len(ca_pos)):
-                    f.write("CRD {:8.3f} {:8.3f} {:8.3f}\n".format(ca_pos[i][0], ca_pos[i][1], ca_pos[i][2]))
-                f.write("TER\n")
-        
-        cmd = lib_dir + "/bin/clash {} {} ".format(pjoin(temp_dir, "frags.txt"), pjoin(temp_dir, "rst.txt"))
-        result = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-
-        if result.returncode == 0:        
-            with open(pjoin(temp_dir, "rst.txt"), 'r') as f:
-                lines = f.readlines()
-            n = 0
-            for line in lines:
-                if line.startswith("matrix"):
-                    rst[n] = np.asarray(line.strip().split()[1:], dtype=np.int32)
-                    n += 1
-        else:
-            print("Unable to calculate the rst matrix!")
-            exit(1)
-    """
 
     for i in range(len(frags)):
         for k in range(i + 1, len(frags)):
@@ -407,7 +369,7 @@ def main(args):
     pass
 
 
-    # output denovo built ones and docked ones independently
+    # Output denovo-built and template-fit parts independently.
     chains0_atom_pos = []
     chains0_atom_mask = []
     chains0_res_type = []
@@ -455,7 +417,7 @@ def main(args):
     print("Write denovo part to {}".format(fout))
 
     # type1
-    fout = pjoin(out_dir, "assemble_dock.cif")
+    fout = pjoin(out_dir, "assemble_fit.cif")
     chains_atom_pos_to_pdb(
         fout,
         chains_atom_pos=chains1_atom_pos,
@@ -464,7 +426,7 @@ def main(args):
         chains_res_idx=chains1_res_idx,
         suffix=fout.split('.')[-1],
     )
-    print("Write dock part to {}".format(fout))
+    print("Write template-fit part to {}".format(fout))
 
     # all
     fout = pjoin(out_dir, "assemble.cif")

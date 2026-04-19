@@ -8,7 +8,6 @@ from the standalone ``em3dfit`` package under ``pkgs/EM3DFit``.
 import argparse
 import json
 import os
-import shutil
 import sys
 from pathlib import Path
 
@@ -89,6 +88,28 @@ def _mask_for_domain(res_idx, domain_str):
     return mask
 
 
+def _write_chain_structure(
+    output_path,
+    atom_pos,
+    atom_mask,
+    res_type,
+    res_idx,
+    bfactor,
+    *,
+    suffix,
+):
+    chains_atom_pos_to_pdb(
+        output_path,
+        chains_atom_pos=[atom_pos],
+        chains_atom_mask=[atom_mask],
+        chains_res_type=[res_type],
+        chains_res_idx=[res_idx],
+        chains_idx=[0],
+        chains_bfactor=[bfactor],
+        suffix=suffix,
+    )
+
+
 def _extract_protein_template_chains(template_paths, output_dir):
     os.makedirs(output_dir, exist_ok=True)
     chain_records = []
@@ -121,17 +142,16 @@ def _extract_protein_template_chains(template_paths, output_dir):
             chain_mask = chain_idx == source_chain_idx
             output_path = pjoin(
                 output_dir,
-                f"template_{template_idx}_chain_{chain_local_idx}.pdb",
+                f"template_{template_idx}_chain_{chain_local_idx}.cif",
             )
-            chains_atom_pos_to_pdb(
+            _write_chain_structure(
                 output_path,
-                chains_atom_pos=[atom_pos[chain_mask]],
-                chains_atom_mask=[atom_mask[chain_mask]],
-                chains_res_type=[res_type[chain_mask]],
-                chains_res_idx=[res_idx[chain_mask]],
-                chains_idx=[0],
-                chains_bfactor=[bfactor[chain_mask]],
-                suffix="pdb",
+                atom_pos[chain_mask],
+                atom_mask[chain_mask],
+                res_type[chain_mask],
+                res_idx[chain_mask],
+                bfactor[chain_mask],
+                suffix="cif",
             )
             print(f"# Write protein template chain to {output_path}")
             chain_records.append(
@@ -176,18 +196,17 @@ def _split_chain_to_domains(chain_record, output_dir):
             (
                 f"template_{chain_record['template_index']}_"
                 f"chain_{chain_record['chain_local_index']}_"
-                f"domain_{domain_idx}.pdb"
+                f"domain_{domain_idx}.cif"
             ),
         )
-        chains_atom_pos_to_pdb(
+        _write_chain_structure(
             output_path,
-            chains_atom_pos=[atom_pos[domain_mask]],
-            chains_atom_mask=[atom_mask[domain_mask]],
-            chains_res_type=[res_type[domain_mask]],
-            chains_res_idx=[res_idx[domain_mask]],
-            chains_idx=[0],
-            chains_bfactor=[bfactor[domain_mask]],
-            suffix="pdb",
+            atom_pos[domain_mask],
+            atom_mask[domain_mask],
+            res_type[domain_mask],
+            res_idx[domain_mask],
+            bfactor[domain_mask],
+            suffix="cif",
         )
         print(f"# Write domain {domain_idx} to {output_path}")
         domain_records.append(
@@ -225,7 +244,26 @@ def _infer_map_apix_and_normalize(raw_map, normalize_mrc):
     return inferred_apix, normalize_mrc(raw_map, inferred_apix)
 
 
-def _prepare_ldps(map_path, resolution, threshold, threshold_ratio, device, angle_step, fgrid, sgrid, ntrans, ntop):
+def _prepare_ldps(
+    map_path,
+    resolution,
+    threshold,
+    threshold_ratio,
+    device,
+    angle_step,
+    fgrid,
+    sgrid,
+    ntrans,
+    ntop,
+    rshift,
+    rmerge,
+    rmsdcut1,
+    rmsdcut2,
+    rigid_nleast,
+    rigid_cutoff_score_early,
+    rigid_cutoff_score_late,
+    rigid_skip_short_residues,
+):
     modules = _load_em3dfit_modules()
     Params = modules["Params"]
     read_mrc = modules["read_mrc"]
@@ -239,13 +277,19 @@ def _prepare_ldps(map_path, resolution, threshold, threshold_ratio, device, angl
         resol=resolution,
         apix=inferred_apix,
         threshold=threshold,
-        rshift=3.0,
-        rmerge=1.0,
+        rshift=rshift,
+        rmerge=rmerge,
         angle_step=angle_step,
         fgrid=fgrid,
         sgrid=sgrid,
+        rmsdcut1=rmsdcut1,
+        rmsdcut2=rmsdcut2,
         ntrans=ntrans,
         ntop=ntop,
+        rigid_nleast=rigid_nleast,
+        rigid_cutoff_score_early=rigid_cutoff_score_early,
+        rigid_cutoff_score_late=rigid_cutoff_score_late,
+        rigid_skip_short_residues=rigid_skip_short_residues,
         flexible=False,
         backend=backend,
         device=resolved_device,
@@ -307,7 +351,7 @@ def _write_domain_group_pdb(domain_records, output_path):
         chains_res_idx=chains_res_idx,
         chains_idx=list(range(len(domain_records))),
         chains_bfactor=chains_bfactor,
-        suffix="pdb",
+        suffix=Path(output_path).suffix.lstrip(".") or "cif",
     )
     print(f"# Write grouped domains to {output_path}")
 
@@ -334,8 +378,12 @@ def _fit_domain_group(
         )
 
     pose_sets = assemble_chains(model.chains, ldps, ldps_dens, params)
-    write_fitted_pdb(model, grouped_fitted_path)
-    print(f"# Write grouped fitted domains to {grouped_fitted_path}")
+    if any(chain.solutions is not None for chain in model.chains):
+        write_fitted_pdb(model, grouped_fitted_path)
+        print(f"# Write grouped fitted domains to {grouped_fitted_path}")
+    else:
+        grouped_fitted_path = None
+        print("# No grouped fitted domains were resolved; skip total CIF output")
 
     fit_results = []
     for domain_record, chain, poses in zip(domain_records, model.chains, pose_sets, strict=True):
@@ -344,7 +392,7 @@ def _fit_domain_group(
             (
                 f"template_{domain_record['template_index']}_"
                 f"chain_{domain_record['chain_local_index']}_"
-                f"domain_{domain_record['domain_index']}_fitted.pdb"
+                f"domain_{domain_record['domain_index']}_fitted.cif"
             ),
         )
 
@@ -380,7 +428,7 @@ def _fit_domain_group(
         )
         print(f"# Write fitted domain to {fitted_path}")
 
-    return fit_results
+    return fit_results, grouped_fitted_path
 
 
 def run_template_domain_fitting(
@@ -397,6 +445,14 @@ def run_template_domain_fitting(
     sgrid=2.0,
     ntrans=8,
     ntop=10,
+    rshift=1.0,
+    rmerge=1.0,
+    rmsdcut1=2.5,
+    rmsdcut2=5.0,
+    rigid_nleast=5,
+    rigid_cutoff_score_early=-1.5,
+    rigid_cutoff_score_late=-0.5,
+    rigid_skip_short_residues=50,
 ):
     output_dir = abspath(output_dir)
     map_path = abspath(map_path)
@@ -420,9 +476,17 @@ def run_template_domain_fitting(
         sgrid=sgrid,
         ntrans=ntrans,
         ntop=ntop,
+        rshift=rshift,
+        rmerge=rmerge,
+        rmsdcut1=rmsdcut1,
+        rmsdcut2=rmsdcut2,
+        rigid_nleast=rigid_nleast,
+        rigid_cutoff_score_early=rigid_cutoff_score_early,
+        rigid_cutoff_score_late=rigid_cutoff_score_late,
+        rigid_skip_short_residues=rigid_skip_short_residues,
     )
     modules = _load_em3dfit_modules()
-    initial_ldps_path = pjoin(output_dir, "initial_ldps.pdb")
+    initial_ldps_path = pjoin(output_dir, "initial_ldps.cif")
     modules["write_mcp_pdb"](initial_ldps_path, ldps, ldps_dens)
     print(f"# Write initial LDPs to {initial_ldps_path}")
 
@@ -434,9 +498,18 @@ def run_template_domain_fitting(
         "apix": float(params.apix),
         "threshold": float(params.threshold),
         "threshold_ratio": None if threshold_ratio is None else float(threshold_ratio),
+        "rshift": float(params.rshift),
+        "rmerge": float(params.rmerge),
+        "rmsdcut1": float(params.rmsdcut1),
+        "rmsdcut2": float(params.rmsdcut2),
+        "rigid_nleast": int(params.rigid_nleast),
+        "rigid_cutoff_score_early": float(params.rigid_cutoff_score_early),
+        "rigid_cutoff_score_late": float(params.rigid_cutoff_score_late),
+        "rigid_skip_short_residues": int(params.rigid_skip_short_residues),
         "initial_ldps_path": initial_ldps_path,
         "grouped_input_path": None,
         "grouped_fitted_path": None,
+        "fitted_total_path": None,
         "chains": [],
     }
 
@@ -445,7 +518,11 @@ def run_template_domain_fitting(
     for chain_record in chain_records:
         domain_result, domain_records = _split_chain_to_domains(chain_record, domain_dir)
         chain_summary = {
-            **chain_record,
+            "template_index": chain_record["template_index"],
+            "template_path": chain_record["template_path"],
+            "source_chain_index": chain_record["source_chain_index"],
+            "chain_local_index": chain_record["chain_local_index"],
+            "chain_path": chain_record["chain_path"],
             "fragment_list": domain_result.get("fragment_list", []),
             "small_domain_list": domain_result.get("small_domain_list", []),
             "large_domain_list": domain_result.get("large_domain_list", []),
@@ -469,13 +546,14 @@ def run_template_domain_fitting(
         all_domain_records.extend(domain_records)
 
     if all_domain_records:
-        grouped_input_path = pjoin(domain_dir, "all_domains_grouped.pdb")
-        grouped_fitted_path = pjoin(fitted_dir, "all_domains_grouped_fitted.pdb")
+        grouped_input_path = pjoin(domain_dir, "all_domains_grouped.cif")
+        grouped_fitted_path = pjoin(output_dir, "fitted_total.cif")
         summary["grouped_input_path"] = grouped_input_path
         summary["grouped_fitted_path"] = grouped_fitted_path
+        summary["fitted_total_path"] = grouped_fitted_path
 
         _write_domain_group_pdb(all_domain_records, grouped_input_path)
-        fit_results = _fit_domain_group(
+        fit_results, resolved_grouped_fitted_path = _fit_domain_group(
             all_domain_records,
             grouped_input_path,
             grouped_fitted_path,
@@ -484,6 +562,8 @@ def run_template_domain_fitting(
             ldps_dens,
             params,
         )
+        summary["grouped_fitted_path"] = resolved_grouped_fitted_path
+        summary["fitted_total_path"] = resolved_grouped_fitted_path
 
         fit_result_by_key = {}
         for domain_record, fit_result in zip(all_domain_records, fit_results, strict=True):
@@ -496,7 +576,7 @@ def run_template_domain_fitting(
 
         for chain_summary in chain_summaries:
             chain_summary["grouped_input_path"] = grouped_input_path
-            chain_summary["grouped_fitted_path"] = grouped_fitted_path
+            chain_summary["grouped_fitted_path"] = resolved_grouped_fitted_path
             for domain_summary in chain_summary["domains"]:
                 record_key = (
                     chain_summary["template_index"],
@@ -536,6 +616,29 @@ def add_args(parser):
     parser.add_argument("--sgrid", type=float, default=2.0, help="Refinement grid spacing")
     parser.add_argument("--ntrans", type=int, default=8, help="Top translations kept per rotation")
     parser.add_argument("--ntop", type=int, default=10, help="Top rigid poses kept per domain")
+    parser.add_argument("--rshift", type=float, default=1.0, help="Mean-shift maximum travel distance in Angstrom")
+    parser.add_argument("--rmerge", type=float, default=1.0, help="LDP mode merge radius in Angstrom")
+    parser.add_argument("--rmsdcut1", type=float, default=2.5, help="Rigid pose clustering RMSD cutoff")
+    parser.add_argument("--rmsdcut2", type=float, default=5.0, help="Reserved secondary RMSD cutoff passed to EM3DFit")
+    parser.add_argument("--rigid-nleast", type=int, default=5, help="Minimum rigid poses retained after z-score filtering")
+    parser.add_argument(
+        "--rigid-cutoff-score-early",
+        type=float,
+        default=-1.5,
+        help="Early rigid z-score cutoff passed to EM3DFit",
+    )
+    parser.add_argument(
+        "--rigid-cutoff-score-late",
+        type=float,
+        default=-0.5,
+        help="Late rigid z-score cutoff passed to EM3DFit search",
+    )
+    parser.add_argument(
+        "--rigid-skip-short-residues",
+        type=int,
+        default=50,
+        help="Rigid fitting short-chain skip threshold passed to EM3DFit",
+    )
     return parser
 
 
@@ -553,6 +656,14 @@ def main(args):
         sgrid=args.sgrid,
         ntrans=args.ntrans,
         ntop=args.ntop,
+        rshift=getattr(args, "rshift", 1.0),
+        rmerge=getattr(args, "rmerge", 1.0),
+        rmsdcut1=getattr(args, "rmsdcut1", 2.5),
+        rmsdcut2=getattr(args, "rmsdcut2", 5.0),
+        rigid_nleast=getattr(args, "rigid_nleast", 5),
+        rigid_cutoff_score_early=getattr(args, "rigid_cutoff_score_early", -1.5),
+        rigid_cutoff_score_late=getattr(args, "rigid_cutoff_score_late", -0.5),
+        rigid_skip_short_residues=getattr(args, "rigid_skip_short_residues", 50),
     )
 
 

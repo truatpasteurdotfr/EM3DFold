@@ -7,17 +7,16 @@
 # 5. do sequence alignment between given seq and template
 
 import os
-import sys
 import shutil
 import builtins
 import numpy as np
 
-from em3dfold.io.fileio import getlines, writelines
+from em3dfold.io.fileio import writelines
 from em3dfold.io.pdbio import read_pdb, chains_atom_pos_to_pdb
 from em3dfold.io.seqio import read_fasta
 
-from em3dfold.template.utils.misc_utils import pjoin, abspath
-from em3dfold.template.utils.residue_constants import index_to_restype_1
+from em3dfold.utils.misc_utils import pjoin, abspath
+from em3dfold.polymer_utils.residue_constants import index_to_restype_1
 
 
 def print(*args, **kwargs):
@@ -26,6 +25,11 @@ def print(*args, **kwargs):
     if not message.startswith("# "):
         message = f"# {message}"
     builtins.print(message, **kwargs)
+
+
+def _protein_mask(res_type):
+    res_type = np.asarray(res_type, dtype=np.int32)
+    return res_type < 20
 
 def main(args):
     fseq = args.seq
@@ -81,20 +85,29 @@ def main(args):
             # Split to chains
             for k in range(0, chain_idx.max() + 1):
                 sel_mask = chain_idx == k
+                prot_mask = _protein_mask(res_type[sel_mask])
+                if not np.any(prot_mask):
+                    print(f"# Skip complex chain {k} because it has no protein residues")
+                    continue
+
+                chain_atom_pos = atom_pos[sel_mask][prot_mask]
+                chain_atom_mask = atom_mask[sel_mask][prot_mask]
+                chain_res_type = res_type[sel_mask][prot_mask]
+                chain_bfactor = bfactor[sel_mask][prot_mask]
 
                 fout = pjoin(complex_templs_out_dir, f"templ_{k}.pdb")
                 chains_atom_pos_to_pdb(
                     filename=fout,
-                    chains_atom_pos=[atom_pos[sel_mask]],
-                    chains_atom_mask=[atom_mask[sel_mask]],
-                    chains_res_type=[res_type[sel_mask]],
-                    chains_res_idx=[np.arange(0, len(sel_mask), dtype=np.int32)],
-                    chains_bfactor=[bfactor[sel_mask]],
+                    chains_atom_pos=[chain_atom_pos],
+                    chains_atom_mask=[chain_atom_mask],
+                    chains_res_type=[chain_res_type],
+                    chains_res_idx=[np.arange(0, len(chain_atom_pos), dtype=np.int32)],
+                    chains_bfactor=[chain_bfactor],
                     suffix='pdb',
                 )
                 print(f"# Rewrite chain {k} from complex to {fout}")
            
-            if len(atom_pos) > 0:
+            if len(list(os.scandir(complex_templs_out_dir))) > 0:
                 has_complex_template = True
 
         # handle exception
@@ -124,9 +137,15 @@ def main(args):
             for k, ftempl in enumerate(ftempls_chain):
                 try:
                     atom_pos, atom_mask, res_type, res_idx, chain_idx, bfactor = read_pdb(ftempl, keep_valid=False, return_bfactor=True)
-                    
-                    # check invalid coordinates
-                    pass
+                    prot_mask = _protein_mask(res_type)
+                    if not np.any(prot_mask):
+                        print(f"# WARNING template {k} has no protein residues, skip it")
+                        continue
+
+                    atom_pos = atom_pos[prot_mask]
+                    atom_mask = atom_mask[prot_mask]
+                    res_type = res_type[prot_mask]
+                    bfactor = bfactor[prot_mask]
 
                     fout = pjoin(chain_templs_out_dir, f"templ_{k}.pdb")
                     chains_atom_pos_to_pdb(
@@ -192,7 +211,7 @@ def main(args):
 
     # interp map
     if args.map is not None:
-        from em3dfold.template.utils.cryo_utils import parse_map, write_map
+        from em3dfold.utils.cryo_utils import parse_map, write_map
         data, origin, _, vsize = parse_map(args.map, False, 1.0)
         map_out = pjoin(args.output, "format_map.mrc")
         write_map(

@@ -1,10 +1,7 @@
 import os
 import re
-import sys
 import time
 import builtins
-import tqdm
-import tempfile
 import argparse
 import numpy as np
 
@@ -12,56 +9,40 @@ from scipy.spatial import KDTree
 from collections import deque
 
 from em3dfold.io.fileio import (
-    getlines,
     writelines,
     extract_lines_by_ca,
-    extract_lines_by_res_idx,
 )
 
 from em3dfold.io.seqio import (
     seq_identity,
     get_sequence_from_pdb_lines,
-    update_sequence_to_pdb_lines,
-    nwalign_fast,
 )
 
-from em3dfold.io.pdbio import (
-    read_pdb,
-    chains_atom_pos_to_pdb,
-)
-
-from em3dfold.template.utils.misc_utils import (
+from em3dfold.utils.misc_utils import (
     abspath,
     pjoin,
     find_first_not_of,
     find_last_not_of,
-    split_array,
 )
 
-from em3dfold.template.utils.tm_utils import (
-    run_USalign,
+from em3dfold.utils.tm_utils import (
+    run_usalign,
     extract_alignment_lines,
 )
 
-from em3dfold.template.utils.domain import (
-    run_stride,
-    run_unidoc,
-    parse_unidoc_result,
-    convert_domains_to_1d_repr,
-    detect_large_loops,
-    extract_secstr_1d,
+from em3dfold.template.pipeline.template_refine import (
+    build_template_refine_context,
+    bundle_from_models,
+    ChainStructureBundle,
+    FixPassResult,
+    load_structure_models,
+    write_fix_outputs,
 )
 
-from em3dfold.template.utils.geo import (
-    distance,
+from em3dfold.utils.geometry import (
     apply,
+    kabsch,
 )
-
-from em3dfold.template.utils.residue_constants import (
-    index_to_restype_3,
-    restype_3_to_index,
-)
-
 
 def print(*args, **kwargs):
     sep = kwargs.pop("sep", " ")
@@ -69,23 +50,6 @@ def print(*args, **kwargs):
     if not message.startswith("# "):
         message = f"# {message}"
     builtins.print(message, **kwargs)
-
-def prune_align(align):
-    i = 0
-    k = len(align) - 1
-    # find first non-space
-    while i < len(align):
-        if align[i] != ' ':
-            break
-        i += 1
-    # find last non-space
-    while k >= 0:
-        if align[k] != ' ':
-            break
-        k -= 1
-    "   ADASDS BSFGED D"
-    "(i, k) = (3, 17)"
-    return (i, k)
 
 def find_matched_frag(seq1, align, seq2, tolerance=2, min_sub_num=5, min_score=0.80, min_seq_id=0.80, verbose=False):
     assert tolerance >= 1
@@ -156,190 +120,71 @@ def idx_aligned_to_original(seq):
             n += 1
     return idxs
 
-def main(args):
-    ts = time.time()
-    try:
-        lib_dir = args.lib
-        lib_dir = abspath(lib_dir)
-        out_dir = args.output
-        out_dir = abspath(out_dir)
-        os.makedirs(out_dir, exist_ok=True)
+def run_fix_pass(args, context) -> FixPassResult:
+    out_dir = abspath(args.output)
+    os.makedirs(out_dir, exist_ok=True)
 
-        verbose = args.verbose
-        # the script is to flexibly transform the templates' domains by the following steps
-        # 0. Do USalign between a chain (n fragment) and a template
-        # 1. Get the best fit fragment, merge it to other well-matched fragment
-        # 2. Keep the minimum "domain" that just include the well-matched fragment(s)
-        # 3. Recursively do the unmatched domains
+    verbose = args.verbose
+    temp_dir = pjoin(out_dir, "alignments")
+    os.makedirs(temp_dir, exist_ok=True)
+    lib_dir = context.lib_dir
+    fchains = [model.path for model in context.chains]
+    ftempls = [model.path for model in context.templates]
+    print(f"Found {len(context.chains)} chains")
+    print(f"Found {len(context.templates)} templates")
 
-        # preprocess templates
-        # split template models into domains
-        ftempls = args.template
+    for i, chain_model in enumerate(context.chains):
+        if len(chain_model.align_seq) == 0:
+            print("WARNING skip chain {} because it has no protein CA sequence".format(chain_model.path))
+            continue
 
-        # process chains
-        fchains = args.chain
+        match = context.best_matches.get(i)
+        if match is None or match.template_index < 0:
+            print("WARNING no valid protein template fit for chain {}".format(chain_model.path))
+            continue
 
-        # set up temp dir
-        temp_dir = pjoin(out_dir, "alignments")
-        os.makedirs(temp_dir, exist_ok=True)
-        print(f"Found {len(fchains)} chains")
-        print(f"Found {len(ftempls)} templates")
+        template_model = context.templates[match.template_index]
+        if len(template_model.align_seq) == 0:
+            print("WARNING skip template {} because it has no protein CA sequence".format(template_model.path))
+            continue
 
+        print("Best sequence fit for chain {} is {}".format(chain_model.path, template_model.path))
 
-        chain_templ_relation = dict()
-        seq_temp_dir = pjoin(temp_dir, "seqs")
-        os.makedirs(seq_temp_dir, exist_ok=True)
-        for i in range(len(fchains)): 
-            # find the best matched template according to seqid
-            # convert X to G to avoid Error from protein sequence align
-            chain_lines = getlines(fchains[i])
-            chain_seq = get_sequence_from_pdb_lines(chain_lines)
-            chain_seq = "".join([x if x != "X" else "G" for x in chain_seq])
-            if len(chain_seq) == 0:
-                print("WARNING skip chain {} because it has no protein CA sequence".format(fchains[i]))
-                chain_templ_relation[i] = -1
-                continue
+    fix_chains_atom_pos = []
+    fix_chains_atom_mask = []
+    fix_chains_res_type = []
+    fix_chains_res_idx = []
 
-            seqid_best = -1e6
-            idx_best = -1
-            for k in range(len(ftempls)):
-                templ_lines = getlines(ftempls[k])
-                templ_seq = get_sequence_from_pdb_lines(templ_lines)
-                templ_seq = "".join([x if x != "X" else "G" for x in templ_seq])
-                if len(templ_seq) == 0:
-                    print("WARNING skip template {} because it has no protein CA sequence".format(ftempls[k]))
-                    continue
-
-                result = nwalign_fast(chain_seq, templ_seq, lib_dir=lib_dir, temp_dir=seq_temp_dir, verbose=verbose, namea=f"chain_{i}", nameb=f"templ_{k}", debug=getattr(args, "debug", False))
-                seqAid = result[3]
-                seqBid = result[5]
-                #print(result)
-                #print(seqAid, seqBid)
-                if seqAid > seqid_best:
-                    seqid_best = seqAid
-                    idx_best = k
-            chain_templ_relation[i] = idx_best
-        for k, v in chain_templ_relation.items():
-            if v is None or v < 0:
-                print("WARNING no valid protein template fit for chain {}".format(fchains[k]))
-                continue
-            print("Best sequence fit for chain {} is {}".format(fchains[k], ftempls[v]))
-
-
-        # split template into domains
-        # further, if a domain contains too many loop regions, like, > 30 consecutive residues
-        # split the domain into fragments too
-        templs_domains = []
-        templs_domains_1d = []
-        for i in range(len(ftempls)):
-            # init domain
-            templ_lines0 = getlines(ftempls[i])
-            ftempl = pjoin(temp_dir, f"templ_{i}_all.pdb")
-            writelines(ftempl, templ_lines0)
-
-            # parse domain
-            unidoc_result = run_unidoc(ftempl, chain='A', lib_dir=lib_dir, temp_dir=temp_dir, domain_type='unmerged')
-            templ_domains = parse_unidoc_result(unidoc_result)
-            templ_domains_1d = convert_domains_to_1d_repr(templ_domains)
-
-            if args.verbose:
-                print("Unidoc domains {}".format(unidoc_result))
-
-            # assign secondary structure for each domain
-            new_templ_domains = []
-            n_extend = 5
-            for k, domain in enumerate(templ_domains):
-                # write to file
-                domain_res_idxs = []
-                for subdomain in domain:
-                    start, end = subdomain
-                    domain_res_idxs.extend(list(range(start, end + 1)))
-                domain_lines = extract_lines_by_res_idx(templ_lines0, domain_res_idxs)
-                ftempl_domain = pjoin(temp_dir, f"templ_{i}_domain_{k}.pdb")
-                writelines(ftempl_domain, domain_lines)
-                #print(domain_res_idxs)
-
-                # run stride on file
-                slines = run_stride(ftempl_domain, lib_dir=lib_dir, temp_dir=None, verbose=verbose)
-                ftempl_secstr = extract_secstr_1d(slines)
-                large_loops = detect_large_loops(ftempl_secstr)
-
-                # further split the domain into small fragments if has large loops
-                # for AF2 predicted models, there are many loops if you provide a full-length sequence
-                # so this step can help reduce the loop residues inside a domain
-                if large_loops:
-                    new_domain = []
-                    seps = []
-                    for loop in large_loops:
-                        # add a small extension on both end
-                        loop_start_idx = loop[0] + n_extend
-                        loop_end_idx = loop[0] + len(loop[1]) - 1 - n_extend
-
-                        # normally, impossible to happen
-                        if not loop_start_idx <= loop_end_idx:
-                            continue
-
-                        seps.append(loop_start_idx)
-                        seps.append(loop_end_idx)
-                        #print(loop_start_idx, loop_end_idx)
-
-                    new_domain_res_idxs = split_array(domain_res_idxs, seps)
-                    new_domain = [[[x[0], x[-1]]] for x in new_domain_res_idxs]
-
-                    # update
-                    new_templ_domains.extend(new_domain)
-                else:
-                    new_templ_domains.append(domain)
-            print("Original domains {}".format(templ_domains))
-            templ_domains = new_templ_domains
-            templ_domains_1d = convert_domains_to_1d_repr(templ_domains)
-            print("Updated  domains {}".format(templ_domains))
-
-            # append to list
-            templs_domains.append(templ_domains)
-            templs_domains_1d.append(templ_domains_1d)
-        #print(templs_domains)
-        #print(templs_domains_1d)        
-        #exit() 
-
-        # Should sort the domains
-        #[[[1034, 1074]], [[1075, 1105]], [[1125, 1310]], [[1021, 1033], [1106, 1124], [1311, 1388]], [[82, 120]], [[0, 81], [121, 256]], [[257, 373]], [[374, 403]], [[425, 464]], [[466, 509]], [[422, 424], [465, 465], [510, 545]], [[404, 421], [546, 659]], [[679, 716]], [[660, 678], [717, 889]], [[890, 1020], [1389, 1639]], [[1640, 1687]]]
-
-
-        # save fixed template coordinates
-        fix_chains_atom_pos = []
-        fix_chains_atom_mask = []
-        fix_chains_res_type = []
-        fix_chains_res_idx = []
-
-        # save chain lines
-        denovo_chain_lines = []
-
-        # loop for each chain
-        max_layer = 20
-        for cidx in range(len(fchains)):
+    max_layer = 20
+    for cidx in range(len(fchains)):
             print("-"*80)
             print(f"Start searching for chain {cidx}")
             print("-"*80)
 
             # find best fit template
-            tidx = chain_templ_relation[cidx]
+            match = context.best_matches.get(cidx)
+            tidx = -1 if match is None else match.template_index
             if tidx is None or tidx < 0:
                 print("Skip chain {} because no valid protein template fit is available".format(cidx))
                 continue
 
-            templ_domains = templs_domains[tidx]
-            templ_domains_1d = templs_domains_1d[tidx]
+            template_domain_info = context.template_domains[tidx]
+            templ_domains = template_domain_info.domains
+            templ_domains_1d = template_domain_info.domains_1d
 
-            # read pdb
-            templ_atom_pos, templ_atom_mask, templ_res_type, templ_res_idx, _ = read_pdb(ftempls[tidx])
+            template_model = context.templates[tidx]
+            chain_model = context.chains[cidx]
+            templ_atom_pos = template_model.atom_pos
+            templ_atom_mask = template_model.atom_mask
+            templ_res_type = template_model.res_type
+            templ_res_idx = template_model.res_idx
 
             # iterative alignment
             # init lines
-            templ_lines0 = getlines(ftempls[tidx])
-            ca_templ_lines0 = extract_lines_by_ca(templ_lines0)
-            chain_lines0 = getlines(fchains[cidx])
-            ca_chain_lines0 = extract_lines_by_ca(chain_lines0)
+            templ_lines0 = template_model.raw_lines
+            ca_templ_lines0 = template_model.ca_lines
+            chain_lines0 = chain_model.raw_lines
+            ca_chain_lines0 = chain_model.ca_lines
             if len(ca_chain_lines0) == 0:
                 print("Skip chain {} because it has no CA atoms".format(cidx))
                 continue
@@ -349,7 +194,6 @@ def main(args):
             q = deque()
             q.append((ca_templ_lines0, ca_chain_lines0))
 
-            fixed_domains = []
             layer = 0
             while q:
                 N = len(q)
@@ -370,17 +214,17 @@ def main(args):
                     writelines(ftempl, templ_lines)
                     writelines(fchain, chain_lines)
 
-                    # run initial USalign
-                    result, R, t = run_USalign(ftempl, fchain, lib_dir=lib_dir, d=2.0, description=templ_prefix + "_onto_" + chain_prefix, temp_dir=temp_dir, verbose=verbose)
-                    # check if we have run USalign succesfully
+                    # run initial usalign
+                    result, R, t = run_usalign(ftempl, fchain, lib_dir=lib_dir, d=2.0, description=templ_prefix + "_onto_" + chain_prefix, temp_dir=temp_dir, verbose=verbose)
+                    # check if we have run usalign succesfully
                     # if not continue on next node
                     if result is None:
-                        print("No USalign result for {} and {}".format(templ_prefix, chain_prefix))
+                        print("No usalign result for {} and {}".format(templ_prefix, chain_prefix))
                         continue
 
                     align_result = extract_alignment_lines(result)
                     if align_result is None:
-                        print("Unable to parse alignment text from USalign output for {} and {}".format(templ_prefix, chain_prefix))
+                        print("Unable to parse alignment text from usalign output for {} and {}".format(templ_prefix, chain_prefix))
                         continue
                     #print(align_result)
 
@@ -395,36 +239,36 @@ def main(args):
                         print(f"No good fragments on layer {layer} node {n}")
                         continue
 
-                    start = int(1e6)
-                    end = -1
-                    #print("Good fragments")
+                    matched_template_pos = []
                     for frag in frags_good:
                         length = len(frag[0])
                         start_idx = frag[1]
                         idxs0 = idxs0_a2o[start_idx : start_idx + length]
-                        #print(idxs0)
 
                         # find start and end for structure 0
                         s = find_first_not_of(idxs0, -1)
                         e = find_last_not_of(idxs0, -1)
                         if s == -1 or e == -1:
                             continue
-                        s = idxs0[s]
-                        e = idxs0[e]
-                        start = min(s, start)
-                        end = max(e, end)
+                        matched_template_pos.extend([int(x) for x in idxs0[s : e + 1] if int(x) != -1])
                         
                     # get the matched minimum "domain"
                     select_doms = []
-                    if end > start:
-                        doms, counts = np.unique(templ_domains_1d[start:end+1], return_counts=True)
+                    if matched_template_pos:
+                        matched_template_pos = np.asarray(matched_template_pos, dtype=np.int32)
+                        matched_res_idx = templ_res_idx[matched_template_pos]
+                        valid_mask = np.logical_and(matched_res_idx >= 0, matched_res_idx < len(templ_domains_1d))
+                        matched_domain_ids = templ_domains_1d[matched_res_idx[valid_mask]]
+                        matched_domain_ids = matched_domain_ids[matched_domain_ids >= 0]
+                        doms, counts = np.unique(matched_domain_ids, return_counts=True)
                         for dom, count in zip(doms, counts):
-                            if count / (end - start + 1) > 0.10:
-                                select_doms.append(dom)
+                            if count / max(len(matched_domain_ids), 1) > 0.10:
+                                select_doms.append(int(dom))
                     print("Select domains {}".format(select_doms))
 
 
-                    # run USalign again to determine the final transform
+                    # Refine the transform directly from the matched CA pairs
+                    # instead of spawning a second usalign process.
                     sel_idxs = []
                     for frag in frags_good:
                         length = len(frag[0])
@@ -432,22 +276,14 @@ def main(args):
                         sel_idxs.extend(list(range(start_idx, start_idx + length)))
                     origial_idxs0 = [idxs0_a2o[x] for x in sel_idxs]
                     origial_idxs1 = [idxs1_a2o[x] for x in sel_idxs]
-                    #print(origial_idxs0)
-                    #print(origial_idxs1)
                     # should not have -1 idx
                     sel_idxs = [i for i in range(len(sel_idxs)) if origial_idxs0[i] != -1 and origial_idxs1[i] != -1]
                     original_idxs0 = [origial_idxs0[i] for i in sel_idxs]
                     original_idxs1 = [origial_idxs1[i] for i in sel_idxs]
-                    #print(origial_idxs0)
-                    #print(origial_idxs1)
                     sel_templ_lines = [templ_lines[x] for x in original_idxs0]
                     sel_chain_lines = [chain_lines[x] for x in original_idxs1]
-                    #print(sel_templ_lines)
-                    #print(sel_chain_lines)
                     sel_ca_templ_lines = extract_lines_by_ca(sel_templ_lines)
                     sel_ca_chain_lines = extract_lines_by_ca(sel_chain_lines)
-                    #print(sel_ca_templ_lines)
-                    #print(sel_ca_chain_lines)
                     sel_templ_seq = get_sequence_from_pdb_lines(sel_ca_templ_lines)
                     sel_chain_seq = get_sequence_from_pdb_lines(sel_ca_chain_lines)
 
@@ -458,39 +294,29 @@ def main(args):
                         print("Chain seq {}".format(sel_chain_seq))
                         print("Seq id {:.4f}".format(seq_id))
 
-                    # mutate matched residues in chain
-                    mutate_chain_seq = sel_templ_seq
-                    mutate_chain_lines = update_sequence_to_pdb_lines(sel_ca_chain_lines, mutate_chain_seq)
-
-                    # save the chain lines
-                    denovo_chain_lines.extend(mutate_chain_lines + ["TER\n"])
-
-                    writelines(pjoin(temp_dir, f"sel_templ_l_{layer}_n_{n}.pdb"), sel_templ_lines)
-                    writelines(pjoin(temp_dir, f"sel_chain_l_{layer}_n_{n}.pdb"), sel_chain_lines)
-                    _, R0, t0 = run_USalign(
-                                    pjoin(temp_dir, f"sel_templ_l_{layer}_n_{n}.pdb"),
-                                    pjoin(temp_dir, f"sel_chain_l_{layer}_n_{n}.pdb"),
-                                    d=2.0,
-                                    lib_dir=lib_dir,
-                                    temp_dir=None,
-                                    verbose=verbose,
-                                )
-                    #print(R)
-                    #print(R0)
-                    #print(t)
-                    #print(t0)
-                    if R0 is not None:
-                        print("Re-align to refine transform")
-                        R = R0
-                        t = t0
+                    if len(original_idxs0) >= 3:
+                        sel_templ_ca = np.asarray(
+                            [[float(line[k:k+8]) for k in [30, 38, 46]] for line in sel_ca_templ_lines],
+                            dtype=np.float32,
+                        )
+                        sel_chain_ca = np.asarray(
+                            [[float(line[k:k+8]) for k in [30, 38, 46]] for line in sel_ca_chain_lines],
+                            dtype=np.float32,
+                        )
+                        if len(sel_templ_ca) == len(sel_chain_ca) and len(sel_templ_ca) >= 3:
+                            print("Refine transform with matched CA Kabsch")
+                            R, t = kabsch(sel_templ_ca, sel_chain_ca)
 
                     # save the corresponding domain structure
                     if select_doms:
                         # 2025-04-20 reorder domain
                         select_templ_mask = np.zeros_like(templ_res_type).astype(bool)
+                        templ_domain_ids = np.full(len(templ_res_idx), -1, dtype=np.int32)
+                        valid_res_mask = np.logical_and(templ_res_idx >= 0, templ_res_idx < len(templ_domains_1d))
+                        templ_domain_ids[valid_res_mask] = templ_domains_1d[templ_res_idx[valid_res_mask]]
 
                         for dom in select_doms:
-                            mask = templ_domains_1d == dom
+                            mask = templ_domain_ids == dom
                             select_templ_mask[mask] = True
 
                         select_atom_pos = templ_atom_pos[select_templ_mask]
@@ -535,7 +361,7 @@ def main(args):
                         bad_idxs.extend(idxs1)
                     bad_idxs = [idx for idx in bad_idxs if idx != -1]
 
-                    # USalign requires at least >= 3 residues
+                    # usalign requires at least >= 3 residues
                     # we further tighten this restraint
                     if len(bad_idxs) >= 5:
                         bad_lines = [chain_lines[x] for x in bad_idxs]
@@ -554,117 +380,98 @@ def main(args):
             print(f"End searching for chain {cidx}")
             print("-"*80)
 
+    if not len(fix_chains_atom_pos) > 0:
+        raise Exception("Unable to fix any chains by fix")
 
-        # if not fixed some chains
-        if not len(fix_chains_atom_pos) > 0:
-            raise Exception("Unable to fix any chains by fix")
+    templ_bundle = ChainStructureBundle(
+        atom_pos=[coords.copy() for coords in fix_chains_atom_pos],
+        atom_mask=[mask.copy() for mask in fix_chains_atom_mask],
+        res_type=[rtype.copy() for rtype in fix_chains_res_type],
+        res_idx=[ridx.copy() for ridx in fix_chains_res_idx],
+    )
 
-        # output templs
-        fout = pjoin(out_dir, "fix_templs.cif")
-        chains_atom_pos_to_pdb(
-            filename=fout,
-            chains_atom_pos=fix_chains_atom_pos,
-            chains_atom_mask=fix_chains_atom_mask,
-            chains_res_type=fix_chains_res_type,
-            chains_res_idx=fix_chains_res_idx,
-            suffix=fout.split('.')[-1],
+    chain_ca_pos = []
+    for chain_model in context.chains:
+        for line in chain_model.ca_lines:
+            chain_ca_pos.append([float(line[k:k+8]) for k in [30, 38, 46]])
+    chain_ca_pos = np.asarray(chain_ca_pos)
+    print("Total {} denovo coords".format(len(chain_ca_pos)))
+    d0 = 1.0
+
+    visited = set()
+    tree = KDTree(chain_ca_pos)
+    for i in range(len(fix_chains_atom_pos)):
+        idxs = tree.query_ball_point(fix_chains_atom_pos[i][..., 1, :], d0)
+        for k, idx in enumerate(idxs):
+            if len(idx) == 0 or len(idx) >= 2:
+                continue
+            if idx[0] in visited:
+                continue
+            visited.add(idx[0])
+            v = chain_ca_pos[idx[0]] - fix_chains_atom_pos[i][k][1]
+            fix_chains_atom_pos[i][k] += v
+
+    return FixPassResult(
+        templ_bundle=templ_bundle,
+        chain_templ_bundle=ChainStructureBundle(
+            atom_pos=fix_chains_atom_pos,
+            atom_mask=fix_chains_atom_mask,
+            res_type=fix_chains_res_type,
+            res_idx=fix_chains_res_idx,
+        ),
+    )
+
+
+def run_with_context(args, context):
+    ts = time.time()
+    out_dir = abspath(args.output)
+    try:
+        result = run_fix_pass(args, context)
+        write_fix_outputs(
+            out_dir=out_dir,
+            templ_bundle=result.templ_bundle,
+            chain_templ_bundle=None,
+            fallback=False,
         )
-        print(f"Write fixed templates to {fout}")
-
-        # the following has very little help to the RMSD performance
-        # but keep it anyway
-        # use predicted Ca coords for templates
-        chain_ca_pos = []
-        for i in range(len(fchains)):
-            chain_lines0 = getlines(fchains[i])
-            ca_chain_lines = extract_lines_by_ca(chain_lines0)
-            for line in ca_chain_lines:
-                chain_ca_pos.append( [float(line[k:k+8]) for k in [30, 38, 46]] )
-        chain_ca_pos = np.asarray(chain_ca_pos)
-        print("Total {} denovo coords".format(len(chain_ca_pos)))
-        d0 = 1.0
-
-        visited = set()
-        tree = KDTree(chain_ca_pos)
-        for i in range(len(fix_chains_atom_pos)):
-            idxs = tree.query_ball_point(fix_chains_atom_pos[i][..., 1, :], d0)
-            for k, idx in enumerate(idxs):
-                # if none is near or more than 1 is near
-                if len(idx) == 0 or len(idx) >= 2:
-                    continue
-                if idx[0] in visited:
-                    continue
-                visited.add(idx[0])
-
-                # shift vector
-                v = chain_ca_pos[idx[0]] - fix_chains_atom_pos[i][k][1]
-                # shift
-                fix_chains_atom_pos[i][k] += v
-
-        # if not fixed some chains
-        if not len(fix_chains_atom_pos) > 0:
-            raise Exception("Unable to fix any chains by fix")
-
-        fout = pjoin(out_dir, "fix_chains_templs.cif")
-        chains_atom_pos_to_pdb(
-            filename=fout,
-            chains_atom_pos=fix_chains_atom_pos,
-            chains_atom_mask=fix_chains_atom_mask,
-            chains_res_type=fix_chains_res_type,
-            chains_res_idx=fix_chains_res_idx,
-            suffix=fout.split('.')[-1],
+        write_fix_outputs(
+            out_dir=out_dir,
+            templ_bundle=None,
+            chain_templ_bundle=result.chain_templ_bundle,
+            fallback=False,
         )
-        print(f"Write fixed templates to {fout}")
-
-    # at least write input denovo chains
     except Exception as e:
         if getattr(args, "debug", False):
             raise
-        fchains = args.chain
         print("Error occurs -> {}".format(e))
         print("WARNING cannot fix chains by templates")
         print("WARNING will write denovo built chains instead")
-        denovo_atom_pos = []
-        denovo_atom_mask = []
-        denovo_res_type = []
-        denovo_res_idx = []
-        for k, fchain in enumerate(fchains):
-            atom_pos, atom_mask, res_type, res_idx, _ = read_pdb(fchain, keep_valid=False)
-            denovo_atom_pos.append(atom_pos)
-            denovo_atom_mask.append(atom_mask)
-            denovo_res_type.append(res_type)
-            denovo_res_idx.append(res_idx)
-
-        #denovo_atom_pos = np.concatenate(denovo_atom_pos, axis=0)
-        #denovo_atom_mask = np.concatenate(denovo_atom_mask, axis=0)
-        #denovo_res_type = np.concatenate(denovo_res_type, axis=0)
-        #denovo_res_idx = np.concatenate(denovo_res_idx, axis=0)
-
-        fout = pjoin(out_dir, "fix_chains_templs.cif")
-        chains_atom_pos_to_pdb(
-            filename=fout,
-            chains_atom_pos=denovo_atom_pos,
-            chains_atom_mask=denovo_atom_mask,
-            chains_res_type=denovo_res_type,
-            chains_res_idx=denovo_res_idx,
-            suffix=fout.split('.')[-1],
+        chain_models = context.chains if context is not None else load_structure_models(args.chain or [])
+        fallback_bundle = bundle_from_models(chain_models)
+        write_fix_outputs(
+            out_dir=out_dir,
+            templ_bundle=fallback_bundle,
+            chain_templ_bundle=fallback_bundle,
+            fallback=True,
         )
-        print(f"Write original chains to {fout}")
-        
-        fout = pjoin(out_dir, "fix_templs.cif")
-        chains_atom_pos_to_pdb(
-            filename=fout,
-            chains_atom_pos=denovo_atom_pos,
-            chains_atom_mask=denovo_atom_mask,
-            chains_res_type=denovo_res_type,
-            chains_res_idx=denovo_res_idx,
-            suffix=fout.split('.')[-1],
-        )
-        print(f"Write original chains to {fout}")
 
 
     te = time.time()
     #print("Time consuming = {:.4f}".format(te - ts))
+
+
+def main(args):
+    temp_context_dir = pjoin(abspath(args.output), "alignments")
+    context = build_template_refine_context(
+        chain_paths=args.chain or [],
+        template_paths=args.template or [],
+        lib_dir=args.lib,
+        work_dir=temp_context_dir,
+        seq_path=args.seq,
+        verbose=args.verbose,
+        debug=getattr(args, "debug", False),
+        prepare_domains_flag=True,
+    )
+    return run_with_context(args, context)
 
 
 if __name__ == '__main__':

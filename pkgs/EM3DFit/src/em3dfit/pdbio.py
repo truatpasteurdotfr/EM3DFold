@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+from io import StringIO
 from pathlib import Path
 
 import numpy as np
+from Bio.PDB import MMCIFIO, MMCIFParser, PDBIO, PDBParser
 
 from em3dfit.score import euler_to_matrix
 from em3dfit.types import Chain, DomainLink, PDBModel, SegmentLink, linear_segment_adjacency
 
 MAINCHAIN_ATOMS = {" N  ", " CA ", " C  "}
 ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+PDB_SUFFIXES = {".pdb", ".ent"}
+CIF_SUFFIXES = {".cif", ".mmcif"}
 
 
 def _parse_xyz(line: str) -> np.ndarray:
@@ -20,6 +24,41 @@ def _parse_xyz(line: str) -> np.ndarray:
         ],
         dtype=np.float32,
     )
+
+
+def _normalize_output_text(lines: list[str]) -> str:
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _read_structure_lines(path: Path) -> list[str]:
+    suffix = path.suffix.lower()
+    if suffix in PDB_SUFFIXES:
+        return path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    if suffix in CIF_SUFFIXES:
+        parser = MMCIFParser(QUIET=True)
+        structure = parser.get_structure(path.stem or "model", str(path))
+        buffer = StringIO()
+        io = PDBIO()
+        io.set_structure(structure)
+        io.save(buffer, write_end=False)
+        return buffer.getvalue().splitlines()
+    raise ValueError(f"Unsupported structure format: {path}")
+
+
+def _write_structure_lines(path: Path, lines: list[str]) -> None:
+    suffix = path.suffix.lower()
+    text = _normalize_output_text(lines)
+    if suffix in PDB_SUFFIXES:
+        path.write_text(text, encoding="utf-8")
+        return
+    if suffix in CIF_SUFFIXES:
+        parser = PDBParser(QUIET=True)
+        structure = parser.get_structure(path.stem or "model", StringIO(text))
+        io = MMCIFIO()
+        io.set_structure(structure)
+        io.save(str(path))
+        return
+    raise ValueError(f"Unsupported structure format: {path}")
 
 
 def _finalize_chain(
@@ -153,7 +192,7 @@ def _apply_remark_links(chains: list[Chain], links: list[DomainLink]) -> None:
 
 def read_pdb(path: str | Path) -> PDBModel:
     path = Path(path)
-    lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    lines = _read_structure_lines(path)
 
     chains: list[Chain] = []
     links: list[DomainLink] = []
@@ -233,14 +272,15 @@ def read_pdb(path: str | Path) -> PDBModel:
 
 def write_mcp_pdb(path: str | Path, ldps: np.ndarray, densities: np.ndarray) -> None:
     path = Path(path)
-    with path.open("w", encoding="utf-8") as handle:
-        for idx, (coord, density) in enumerate(zip(ldps, densities, strict=True), start=1):
-            handle.write(
-                f"ATOM  {idx:5d}  CA  ALA A{idx:4d}    "
-                f"{coord[0]:8.3f}{coord[1]:8.3f}{coord[2]:8.3f}"
-                f"{1.00:6.2f}{float(density):6.2f}          C\n"
-            )
-            handle.write("TER\n")
+    lines: list[str] = []
+    for idx, (coord, density) in enumerate(zip(ldps, densities, strict=True), start=1):
+        lines.append(
+            f"ATOM  {idx:5d}  CA  ALA A{idx:4d}    "
+            f"{coord[0]:8.3f}{coord[1]:8.3f}{coord[2]:8.3f}"
+            f"{1.00:6.2f}{float(density):6.2f}          C"
+        )
+        lines.append("TER")
+    _write_structure_lines(path, lines)
 
 
 def write_scored_pdb(model: PDBModel, output_path: str | Path) -> None:
@@ -314,59 +354,60 @@ def write_scored_pdb(model: PDBModel, output_path: str | Path) -> None:
         segment_offset += chain.n_segments
         frag_offset += chain.n_frags
 
-    with output_path.open("w", encoding="utf-8") as handle:
-        segment_offset = 0
-        frag_offset = 0
-        for chain_idx, chain in enumerate(chains):
-            chain_label = ALPHABET[chain_idx % len(ALPHABET)]
-            handle.write(f"REMARK chain score   {chain_label} {chain_scoresx[chain_idx]:8.3f}\n")
-            for seg_idx in range(chain.n_segments):
-                handle.write(
-                    f"REMARK domain score{segment_offset + seg_idx + 1:4d} {segment_scoresx[segment_offset + seg_idx]:8.3f}\n"
-                )
-            for frag_idx in range(chain.n_frags):
-                handle.write(
-                    f"REMARK frag score {frag_offset + frag_idx + 1:4d} {frag_scoresx[frag_offset + frag_idx]:8.3f}\n"
-                )
-            segment_offset += chain.n_segments
-            frag_offset += chain.n_frags
+    output_lines: list[str] = []
+    segment_offset = 0
+    frag_offset = 0
+    for chain_idx, chain in enumerate(chains):
+        chain_label = ALPHABET[chain_idx % len(ALPHABET)]
+        output_lines.append(f"REMARK chain score   {chain_label} {chain_scoresx[chain_idx]:8.3f}")
+        for seg_idx in range(chain.n_segments):
+            output_lines.append(
+                f"REMARK domain score{segment_offset + seg_idx + 1:4d} {segment_scoresx[segment_offset + seg_idx]:8.3f}"
+            )
+        for frag_idx in range(chain.n_frags):
+            output_lines.append(
+                f"REMARK frag score {frag_offset + frag_idx + 1:4d} {frag_scoresx[frag_offset + frag_idx]:8.3f}"
+            )
+        segment_offset += chain.n_segments
+        frag_offset += chain.n_frags
 
-        nr = 0
-        nc = 0
-        na = 0
-        segment_offset = 0
-        frag_offset = 0
-        previous_residue_field = ""
-        current_frag = 1
-        current_seg = 1
-        for raw_line in model.lines:
-            line = raw_line.rstrip("\n").ljust(80)
-            record = line[:6]
-            out = list(line[:80])
-            if record == "ATOM  ":
-                residue_field = line[17:27]
-                if residue_field != previous_residue_field:
-                    nr += 1
-                    previous_residue_field = residue_field
+    nr = 0
+    nc = 0
+    na = 0
+    segment_offset = 0
+    frag_offset = 0
+    previous_residue_field = ""
+    current_frag = 1
+    current_seg = 1
+    for raw_line in model.lines:
+        line = raw_line.rstrip("\n").ljust(80)
+        record = line[:6]
+        out = list(line[:80])
+        if record == "ATOM  ":
+            residue_field = line[17:27]
+            if residue_field != previous_residue_field:
+                nr += 1
+                previous_residue_field = residue_field
 
-                atom_name = line[12:16]
-                if atom_name in MAINCHAIN_ATOMS and nc < len(chains):
-                    na += 1
-                    current_frag = frag_offset + int(chains[nc].frag_numbers[na - 1])
-                    current_seg = segment_offset + int(chains[nc].segment_numbers[na - 1])
+            atom_name = line[12:16]
+            if atom_name in MAINCHAIN_ATOMS and nc < len(chains):
+                na += 1
+                current_frag = frag_offset + int(chains[nc].frag_numbers[na - 1])
+                current_seg = segment_offset + int(chains[nc].segment_numbers[na - 1])
 
-                score_text = f"{residue_scoresx[max(nr - 1, 0)]:6.2f}"
-                ids_text = f"{current_frag:4d}{current_seg:4d}"
-                out[60:66] = list(score_text)
-                out[66:74] = list(ids_text)
-            elif line.startswith("TER"):
-                if nc < len(chains):
-                    segment_offset += chains[nc].n_segments
-                    frag_offset += chains[nc].n_frags
-                nc += 1
-                na = 0
-                previous_residue_field = ""
-            handle.write("".join(out).rstrip() + "\n")
+            score_text = f"{residue_scoresx[max(nr - 1, 0)]:6.2f}"
+            ids_text = f"{current_frag:4d}{current_seg:4d}"
+            out[60:66] = list(score_text)
+            out[66:74] = list(ids_text)
+        elif line.startswith("TER"):
+            if nc < len(chains):
+                segment_offset += chains[nc].n_segments
+                frag_offset += chains[nc].n_frags
+            nc += 1
+            na = 0
+            previous_residue_field = ""
+        output_lines.append("".join(out).rstrip())
+    _write_structure_lines(output_path, output_lines)
 
 
 def write_fitted_pdb(model: PDBModel, output_path: str | Path) -> None:
@@ -377,38 +418,39 @@ def write_fitted_pdb(model: PDBModel, output_path: str | Path) -> None:
         for residue_number, segment_number in zip(chain.residue_numbers, chain.segment_numbers, strict=True):
             residue_to_segment.setdefault(int(residue_number), int(segment_number))
         residue_maps.append(residue_to_segment)
-    with output_path.open("w", encoding="utf-8") as handle:
-        nc = 0
-        nr = 0
-        previous_residue_field = ""
-        for raw_line in model.lines:
-            line = raw_line.rstrip("\n").ljust(80)
-            record = line[:6]
-            if record == "ATOM  " and nc < len(model.chains):
-                out = list(line[:80])
-                chain = model.chains[nc]
-                if chain.solutions is None:
-                    continue
-                residue_field = line[17:27]
-                if residue_field != previous_residue_field:
-                    nr += 1
-                    previous_residue_field = residue_field
-                segment = residue_maps[nc].get(nr, 1)
-                segment = min(max(segment, 1), chain.n_segments)
-                solution = chain.solutions[segment - 1] if chain.solutions is not None else np.zeros(6, dtype=np.float32)
-                rot = euler_to_matrix(solution[:3])
-                coord = _parse_xyz(line)
-                moved = rot @ (coord - chain.centroid) + chain.centroid + solution[3:6]
-                out[30:54] = list(f"{moved[0]:8.3f}{moved[1]:8.3f}{moved[2]:8.3f}")
-                handle.write("".join(out).rstrip() + "\n")
-            elif line.startswith("TER"):
-                write_ter = nc < len(model.chains) and model.chains[nc].solutions is not None
-                nc += 1
-                previous_residue_field = ""
-                if write_ter:
-                    handle.write("TER\n")
-            else:
-                handle.write(line.rstrip() + "\n")
+    output_lines: list[str] = []
+    nc = 0
+    nr = 0
+    previous_residue_field = ""
+    for raw_line in model.lines:
+        line = raw_line.rstrip("\n").ljust(80)
+        record = line[:6]
+        if record == "ATOM  " and nc < len(model.chains):
+            out = list(line[:80])
+            chain = model.chains[nc]
+            if chain.solutions is None:
+                continue
+            residue_field = line[17:27]
+            if residue_field != previous_residue_field:
+                nr += 1
+                previous_residue_field = residue_field
+            segment = residue_maps[nc].get(nr, 1)
+            segment = min(max(segment, 1), chain.n_segments)
+            solution = chain.solutions[segment - 1] if chain.solutions is not None else np.zeros(6, dtype=np.float32)
+            rot = euler_to_matrix(solution[:3])
+            coord = _parse_xyz(line)
+            moved = rot @ (coord - chain.centroid) + chain.centroid + solution[3:6]
+            out[30:54] = list(f"{moved[0]:8.3f}{moved[1]:8.3f}{moved[2]:8.3f}")
+            output_lines.append("".join(out).rstrip())
+        elif line.startswith("TER"):
+            write_ter = nc < len(model.chains) and model.chains[nc].solutions is not None
+            nc += 1
+            previous_residue_field = ""
+            if write_ter:
+                output_lines.append("TER")
+        else:
+            output_lines.append(line.rstrip())
+    _write_structure_lines(output_path, output_lines)
 
 
 def write_top_pose_bundle_pdb(
@@ -444,4 +486,4 @@ def write_top_pose_bundle_pdb(
             elif record == "TER   ":
                 output_lines.append("TER")
 
-    output_path.write_text("\n".join(output_lines).rstrip() + "\n", encoding="utf-8")
+    _write_structure_lines(output_path, output_lines)

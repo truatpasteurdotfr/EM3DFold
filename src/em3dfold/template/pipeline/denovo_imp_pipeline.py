@@ -1,40 +1,32 @@
 import os
 import re
-import sys
 import time
 import builtins
-import tqdm
-import tempfile
 import argparse
 import numpy as np
 
-from scipy.spatial import KDTree
-
-from em3dfold.io.fileio import (
-    getlines,
-    writelines,
-)
-
 from em3dfold.io.seqio import (
-    read_fasta,
-    get_sequence_from_pdb_lines,
     nwalign_fast,
 )
 
-from em3dfold.io.pdbio import (
-    read_pdb,
-    chains_atom_pos_to_pdb,
-)
-
-from em3dfold.template.utils.misc_utils import (
+from em3dfold.utils.misc_utils import (
     abspath,
     pjoin,
 )
 
-from em3dfold.template.utils.geo import (
+from em3dfold.utils.geometry import (
     rmsd,
     kabsch,
     apply,
+)
+from em3dfold.template.pipeline.template_refine import (
+    build_template_refine_context,
+    bundle_from_models,
+    ImpPassResult,
+    is_valid_alignment_result,
+    load_structure_models,
+    ChainStructureBundle,
+    write_imp_outputs,
 )
 
 
@@ -45,14 +37,9 @@ def print(*args, **kwargs):
         message = f"# {message}"
     builtins.print(message, **kwargs)
 
-from em3dfold.template.utils.residue_constants import (
-    index_to_restype_3,
-    index_to_restype_1,
-    restype_3_to_index,
-    restype_1_to_index,
-)
+from em3dfold.polymer_utils.residue_constants import index_to_restype_1
 
-from em3dfold.template.utils.shift_field import create_shift_field
+from em3dfold.utils.shift_field import create_shift_field
 
 def split_gaps_seq(sequence):
     gaps = []
@@ -84,133 +71,60 @@ def idx_aligned_to_original(seq):
             n += 1
     return idxs
 
-def is_valid_alignment_result(result):
-    if result is None or len(result) < 7:
-        return False
-    return all(isinstance(result[i], str) for i in [0, 1, 2])
+def run_imp_pass(args, context) -> ImpPassResult:
+    out_dir = abspath(args.output)
+    os.makedirs(out_dir, exist_ok=True)
 
-def main(args):
-    ts = time.time()
-    try:
-        lib_dir = args.lib
-        lib_dir = abspath(lib_dir)
-        out_dir = args.output
-        out_dir = abspath(out_dir)
-        os.makedirs(out_dir, exist_ok=True)
+    temp_dir = pjoin(out_dir, "alignments")
+    os.makedirs(temp_dir, exist_ok=True)
+    lib_dir = context.lib_dir
+    seqs = context.target_seqs
+    fchains = [model.path for model in context.chains]
+    ftempls = [model.path for model in context.templates]
+    print("Found {} seqs".format(len(seqs)))
 
-        fseq = args.seq
-        seqs = read_fasta(fseq)
-        print("Found {} seqs".format(len(seqs)))
+    verbose = args.verbose
+    print(f"Input {len(fchains)} chains")
+    print(f"Input {len(ftempls)} templates")
+    seq_temp_dir = pjoin(temp_dir, "seqs")
+    os.makedirs(seq_temp_dir, exist_ok=True)
 
-        verbose = args.verbose
-        # the script is to fix structure gaps inside each chains
+    for i, chain_model in enumerate(context.chains):
+        if len(chain_model.align_seq) == 0:
+            print("WARNING skip chain {} because it has no protein CA sequence".format(chain_model.path))
+            continue
 
-        # preprocess templates
-        # split template models into domains
-        ftempls = args.template
+        match = context.best_matches.get(i)
+        if match is None or match.template_index < 0:
+            print("WARNING no valid template alignment for chain {}".format(chain_model.path))
+            continue
 
-        # process chains
-        fchains = args.chain
+        template_model = context.templates[match.template_index]
+        if len(template_model.align_seq) == 0:
+            print("WARNING skip template {} because it has no protein CA sequence".format(template_model.path))
+            continue
 
-        # set up temp dir
-        temp_dir = pjoin(out_dir, "alignments")
-        os.makedirs(temp_dir, exist_ok=True)
-        print(f"Input {len(fchains)} chains")
-        print(f"Input {len(ftempls)} templates")
+        print("Best template fit for chain {} is {}".format(chain_model.path, template_model.path))
 
+    shift_field_refine = False
+    seqid_cutoff = 0.60
+    seqcov_cutoff = 0.60
+    rms_cutoff = 2.0
+    gap_ratio_chain_cutoff = 0.50
+    gap_ratio_templ_cutoff = 0.20
+    fix_gap_at_terminus = True
+    all_fixed_atom_pos = []
+    all_fixed_atom_mask = []
+    all_fixed_res_type = []
+    all_is_fixed = []
+    for i, chain_model in enumerate(context.chains):
+            chain_atom_pos = chain_model.atom_pos
+            chain_atom_mask = chain_model.atom_mask
+            chain_res_type = chain_model.res_type
+            chain_res_idx = chain_model.res_idx
 
-        # for each chain, find the best match templ
-        chain_seqs = []
-        templ_seqs = []
-
-        chain_templ_relation = dict()
-        chain_templ_seq_align = dict()
-
-        seq_temp_dir = pjoin(temp_dir, "seqs")
-        os.makedirs(seq_temp_dir, exist_ok=True)
-        for i in range(len(fchains)): 
-            # find the best matched template according to seqid
-            # convert X to G to avoid Error from protein sequence align
-            chain_lines = getlines(fchains[i])
-
-            # get sequene from pdbfile
-            chain_seq = get_sequence_from_pdb_lines(chain_lines)
-            chain_seq = "".join([x if x != "X" else "G" for x in chain_seq])
-            if len(chain_seq) == 0:
-                print("WARNING skip chain {} because it has no protein CA sequence".format(fchains[i]))
-                chain_seqs.append(chain_seq)
-                chain_templ_relation[i] = -1
-                continue
-
-            # record chain seq
-            chain_seqs.append(chain_seq)
-
-            seqid_best = -1e6
-            idx_best = -1
-            for k in range(len(ftempls)):
-                templ_lines = getlines(ftempls[k])
-                templ_seq = get_sequence_from_pdb_lines(templ_lines)
-                templ_seq = "".join([x if x != "X" else "G" for x in templ_seq])
-                if len(templ_seq) == 0:
-                    print("WARNING skip template {} because it has no protein CA sequence".format(ftempls[k]))
-                    continue
-
-                # record templ seq
-                if i == 0:
-                    templ_seqs.append(templ_seq)
-
-                result = nwalign_fast(chain_seq, templ_seq, lib_dir=lib_dir, temp_dir=seq_temp_dir, verbose=verbose, namea=f"chain_{i}", nameb=f"templ_{k}", debug=getattr(args, "debug", False))
-                if not is_valid_alignment_result(result):
-                    print("WARNING invalid sequence alignment for chain {} and template {}".format(i, k))
-                    continue
-                seqAid = result[3]
-                seqBid = result[5]
-
-                if seqAid > seqid_best:
-                    seqid_best = seqAid
-                    idx_best = k
-
-                # record alignment
-                key = "{}_{}".format(i, k)
-                chain_templ_seq_align[key] = result
-
-            chain_templ_relation[i] = idx_best
-        for k, v in chain_templ_relation.items():
-            if v is None or v < 0:
-                print("WARNING no valid template alignment for chain {}".format(fchains[k]))
-                continue
-            print("Best template fit for chain {} is {}".format(fchains[k], ftempls[v]))
-
-
-        templs_atom_pos = []
-        templs_atom_mask = []
-        templs_res_type = []
-        templs_res_idx = []
-        templs_chain_idx = []
-        for ftempl in ftempls:
-            atom_pos, atom_mask, res_type, res_idx, chain_idx = read_pdb(ftempl, keep_valid=False)
-            templs_atom_pos.append(atom_pos)
-            templs_atom_mask.append(atom_mask)
-            templs_res_type.append(res_type)
-            templs_res_idx.append(res_idx)
-            templs_chain_idx.append(chain_idx)
-
-        shift_field_refine = False
-        seqid_cutoff = 0.60
-        seqcov_cutoff = 0.60
-        rms_cutoff = 2.0
-        gap_ratio_chain_cutoff = 0.50
-        gap_ratio_templ_cutoff = 0.20
-        fix_gap_at_terminus = True
-        all_fixed_atom_pos = []
-        all_fixed_atom_mask = []
-        all_fixed_res_type = []
-        all_is_fixed = []
-        for i, fchain in enumerate(fchains):
-            # find gaps
-            chain_atom_pos, chain_atom_mask, chain_res_type, chain_res_idx, _ = read_pdb(fchain, keep_valid=False)
-        
-            tidx = chain_templ_relation[i]
+            match = context.best_matches.get(i)
+            tidx = -1 if match is None else match.template_index
             if tidx is None or tidx < 0:
                 all_fixed_atom_pos.append(chain_atom_pos)
                 all_fixed_atom_mask.append(chain_atom_mask)
@@ -219,15 +133,15 @@ def main(args):
                 print('-'*80)
                 print("Skip chain {} because no valid template alignment is available".format(i))
                 continue
-            templ_atom_pos = templs_atom_pos[tidx]
-            templ_atom_mask = templs_atom_mask[tidx]
-            templ_res_type = templs_res_type[tidx]
+            template_model = context.templates[tidx]
+            templ_atom_pos = template_model.atom_pos
+            templ_atom_mask = template_model.atom_mask
+            templ_res_type = template_model.res_type
 
             chain_seq = "".join( [index_to_restype_1[x] for x in chain_res_type] )
             templ_seq = "".join( [index_to_restype_1[x] for x in templ_res_type] )
 
-            key = "{}_{}".format(i, tidx)
-            result = chain_templ_seq_align[key]
+            result = context.all_pair_alignments.get((i, tidx))
             if not is_valid_alignment_result(result):
                 all_fixed_atom_pos.append(chain_atom_pos)
                 all_fixed_atom_mask.append(chain_atom_mask)
@@ -423,184 +337,164 @@ def main(args):
             print("Done fix chain {}".format(i))
             print('-'*80)
 
-
-
-        # trim fixed chains to keep only the matched residues
-        n_res_gap_cutoff = 10
-        d_caca_cutoff = 6.0
-        trimmed_atom_pos = []
-        trimmed_atom_mask = []
-        trimmed_res_type = []
-        trimmed_res_idx = []
-        chain_seq_align = dict()
-        for i in range(len(all_fixed_atom_pos)):
-            if not all_is_fixed[i]:
-                print("WARNING chain {} was not protein-template-fixed, keep full chain".format(i))
-                atom_pos = all_fixed_atom_pos[i]
-                trimmed_atom_pos.append(atom_pos)
-                atom_mask = all_fixed_atom_mask[i]
-                trimmed_atom_mask.append(atom_mask)
-                res_type = all_fixed_res_type[i]
-                trimmed_res_type.append(res_type)
-                trimmed_res_idx.append(np.arange(len(atom_pos), dtype=np.int32))
-                continue
-
-            chain_seq = "".join([index_to_restype_1[x] for x in all_fixed_res_type[i]])
-
-            seqid_best = -1e6
-            idx_best = -1
-            for k in range(len(seqs)):
-                result = nwalign_fast(
-                    chain_seq, 
-                    seqs[k], 
-                    lib_dir=lib_dir, temp_dir=seq_temp_dir, verbose=verbose, namea=f"fixed_chain_{i}", nameb=f"seq_{k}", debug=getattr(args, "debug", False)
-                )
-                if not is_valid_alignment_result(result):
-                    print("WARNING invalid sequence alignment for fixed chain {} and target seq {}".format(i, k))
-                    continue
-                seqAid = result[3]
-                seqBid = result[5]
-
-                if seqAid > seqid_best:
-                    seqid_best = seqAid
-                    idx_best = k
-
-                # record alignment
-                key = "{}_{}".format(i, k)
-                chain_seq_align[key] = result
-
-            if idx_best is None or idx_best < 0:
-                print("WARNING no valid sequence alignment for fixed chain {}, keep full chain".format(i))
-                atom_pos = all_fixed_atom_pos[i]
-                trimmed_atom_pos.append(atom_pos)
-                atom_mask = all_fixed_atom_mask[i]
-                trimmed_atom_mask.append(atom_mask)
-                res_type = all_fixed_res_type[i]
-                trimmed_res_type.append(res_type)
-                trimmed_res_idx.append(np.arange(len(atom_pos), dtype=np.int32))
-                continue
-
-            key = "{}_{}".format(i, idx_best)
-            result = chain_seq_align[key]
-            if not is_valid_alignment_result(result):
-                print("WARNING best sequence alignment for fixed chain {} is invalid, keep full chain".format(i))
-                atom_pos = all_fixed_atom_pos[i]
-                trimmed_atom_pos.append(atom_pos)
-                atom_mask = all_fixed_atom_mask[i]
-                trimmed_atom_mask.append(atom_mask)
-                res_type = all_fixed_res_type[i]
-                trimmed_res_type.append(res_type)
-                trimmed_res_idx.append(np.arange(len(atom_pos), dtype=np.int32))
-                continue
-
-            # get the aligned residue index
-            gaps = split_gaps_seq(
-                result[1],
-            )
-            keep_idxs = np.ones(len(result[0]), dtype=bool)
-            for gap in gaps:
-                start = gap[0]
-                l = len(gap[1])
-                if l > n_res_gap_cutoff:
-                    for k in range(start, start + l):
-                        keep_idxs[k] = False
-
-            idxs_a2o = idx_aligned_to_original(result[0])
-            keep_idxs_a2o = idxs_a2o[keep_idxs]
-            keep_idxs_a2o = keep_idxs_a2o[keep_idxs_a2o != -1]
-
-            # add trim atom pos, atom mask and res type
-            atom_pos = all_fixed_atom_pos[i][keep_idxs_a2o]
+    n_res_gap_cutoff = 10
+    d_caca_cutoff = 6.0
+    trimmed_atom_pos = []
+    trimmed_atom_mask = []
+    trimmed_res_type = []
+    trimmed_res_idx = []
+    chain_seq_align = dict()
+    for i in range(len(all_fixed_atom_pos)):
+        if not all_is_fixed[i]:
+            print("WARNING chain {} was not protein-template-fixed, keep full chain".format(i))
+            atom_pos = all_fixed_atom_pos[i]
             trimmed_atom_pos.append(atom_pos)
-            atom_mask = all_fixed_atom_mask[i][keep_idxs_a2o]
+            atom_mask = all_fixed_atom_mask[i]
             trimmed_atom_mask.append(atom_mask)
-            res_type = all_fixed_res_type[i][keep_idxs_a2o]
+            res_type = all_fixed_res_type[i]
             trimmed_res_type.append(res_type)
+            trimmed_res_idx.append(np.arange(len(atom_pos), dtype=np.int32))
+            continue
 
-            # for each residue, if the distance to the next residue is larger than 6A add a gap index
-            res_idx = keep_idxs_a2o.copy()
-            for k in range(len(atom_pos) - 1):
-                d_caca = np.linalg.norm(atom_pos[k][1] - atom_pos[k+1][1])
-                if d_caca > d_caca_cutoff:
-                    res_idx[k+1:] += 1
-                    print("Found large Ca-Ca gap of distance = {:.4f}".format(d_caca))
+        chain_seq = "".join([index_to_restype_1[x] for x in all_fixed_res_type[i]])
 
-            trimmed_res_idx.append(res_idx)
+        seqid_best = -1e6
+        idx_best = -1
+        for k in range(len(seqs)):
+            result = nwalign_fast(
+                chain_seq,
+                seqs[k],
+                lib_dir=lib_dir, temp_dir=seq_temp_dir, verbose=verbose, namea=f"fixed_chain_{i}", nameb=f"seq_{k}", debug=getattr(args, "debug", False)
+            )
+            if not is_valid_alignment_result(result):
+                print("WARNING invalid sequence alignment for fixed chain {} and target seq {}".format(i, k))
+                continue
+            seqAid = result[3]
+            seqBid = result[5]
 
-        # if not fixed some chains
-        if not len(trimmed_atom_pos) > 0:
-            raise Exception("Unable to fix any chains by imp")
+            if seqAid > seqid_best:
+                seqid_best = seqAid
+                idx_best = k
 
-        # write un-trimmed chains
-        fout = pjoin(out_dir, 'imp_chains_untrimmed.cif')
-        chains_atom_pos_to_pdb(
-            filename=fout,
-            chains_atom_pos=all_fixed_atom_pos,
-            chains_atom_mask=all_fixed_atom_mask,
-            chains_res_type=all_fixed_res_type,
-            suffix='cif',
+            key = "{}_{}".format(i, k)
+            chain_seq_align[key] = result
+
+        if idx_best is None or idx_best < 0:
+            print("WARNING no valid sequence alignment for fixed chain {}, keep full chain".format(i))
+            atom_pos = all_fixed_atom_pos[i]
+            trimmed_atom_pos.append(atom_pos)
+            atom_mask = all_fixed_atom_mask[i]
+            trimmed_atom_mask.append(atom_mask)
+            res_type = all_fixed_res_type[i]
+            trimmed_res_type.append(res_type)
+            trimmed_res_idx.append(np.arange(len(atom_pos), dtype=np.int32))
+            continue
+
+        key = "{}_{}".format(i, idx_best)
+        result = chain_seq_align[key]
+        if not is_valid_alignment_result(result):
+            print("WARNING best sequence alignment for fixed chain {} is invalid, keep full chain".format(i))
+            atom_pos = all_fixed_atom_pos[i]
+            trimmed_atom_pos.append(atom_pos)
+            atom_mask = all_fixed_atom_mask[i]
+            trimmed_atom_mask.append(atom_mask)
+            res_type = all_fixed_res_type[i]
+            trimmed_res_type.append(res_type)
+            trimmed_res_idx.append(np.arange(len(atom_pos), dtype=np.int32))
+            continue
+
+        gaps = split_gaps_seq(result[1])
+        keep_idxs = np.ones(len(result[0]), dtype=bool)
+        for gap in gaps:
+            start = gap[0]
+            l = len(gap[1])
+            if l > n_res_gap_cutoff:
+                for k in range(start, start + l):
+                    keep_idxs[k] = False
+
+        idxs_a2o = idx_aligned_to_original(result[0])
+        keep_idxs_a2o = idxs_a2o[keep_idxs]
+        keep_idxs_a2o = keep_idxs_a2o[keep_idxs_a2o != -1]
+
+        atom_pos = all_fixed_atom_pos[i][keep_idxs_a2o]
+        trimmed_atom_pos.append(atom_pos)
+        atom_mask = all_fixed_atom_mask[i][keep_idxs_a2o]
+        trimmed_atom_mask.append(atom_mask)
+        res_type = all_fixed_res_type[i][keep_idxs_a2o]
+        trimmed_res_type.append(res_type)
+
+        res_idx = keep_idxs_a2o.copy()
+        for k in range(len(atom_pos) - 1):
+            d_caca = np.linalg.norm(atom_pos[k][1] - atom_pos[k+1][1])
+            if d_caca > d_caca_cutoff:
+                res_idx[k+1:] += 1
+                print("Found large Ca-Ca gap of distance = {:.4f}".format(d_caca))
+
+        trimmed_res_idx.append(res_idx)
+
+    if not len(trimmed_atom_pos) > 0:
+        raise Exception("Unable to fix any chains by imp")
+
+    return ImpPassResult(
+        untrimmed_bundle=ChainStructureBundle(
+            atom_pos=all_fixed_atom_pos,
+            atom_mask=all_fixed_atom_mask,
+            res_type=all_fixed_res_type,
+            res_idx=None,
+        ),
+        trimmed_bundle=ChainStructureBundle(
+            atom_pos=trimmed_atom_pos,
+            atom_mask=trimmed_atom_mask,
+            res_type=trimmed_res_type,
+            res_idx=trimmed_res_idx,
+        ),
+    )
+
+
+def run_with_context(args, context):
+    ts = time.time()
+    out_dir = abspath(args.output)
+    try:
+        result = run_imp_pass(args, context)
+        write_imp_outputs(
+            out_dir=out_dir,
+            untrimmed_bundle=result.untrimmed_bundle,
+            trimmed_bundle=result.trimmed_bundle,
+            fallback=False,
         )
-        print("Write untrimmed chains to {}".format(fout))
-
-        # write trimmed chains
-        fout = pjoin(out_dir, 'imp_chains_trimmed.cif')
-        chains_atom_pos_to_pdb(
-            filename=fout,
-            chains_atom_pos=trimmed_atom_pos,
-            chains_atom_mask=trimmed_atom_mask,
-            chains_res_type=trimmed_res_type,
-            chains_res_idx=trimmed_res_idx,
-            suffix='cif',
-        )
-        print("Write trimmed chains to {}".format(fout))
     except Exception as e:
         if getattr(args, "debug", False):
             raise
-        fchains = args.chain
         print("Error occurs -> {}".format(e))
         print("WARNING cannot imp chains by templates")
         print("WARNING will write denovo built chains instead")
+        chain_models = context.chains if context is not None else load_structure_models(args.chain or [])
 
-        denovo_atom_pos = []
-        denovo_atom_mask = []
-        denovo_res_type = []
-        denovo_res_idx = []
-        for k, fchain in enumerate(fchains):
-            atom_pos, atom_mask, res_type, res_idx, _ = read_pdb(fchain, keep_valid=False)
-            denovo_atom_pos.append(atom_pos)
-            denovo_atom_mask.append(atom_mask)
-            denovo_res_type.append(res_type)
-            denovo_res_idx.append(res_idx)
-
-        #denovo_atom_pos = np.concatenate(denovo_atom_pos, axis=0)
-        #denovo_atom_mask = np.concatenate(denovo_atom_mask, axis=0)
-        #denovo_res_type = np.concatenate(denovo_res_type, axis=0)
-        #denovo_res_idx = np.concatenate(denovo_res_idx, axis=0)
-
-        fout = pjoin(out_dir, "imp_chains_untrimmed.cif")
-        chains_atom_pos_to_pdb(
-            filename=fout,
-            chains_atom_pos=denovo_atom_pos,
-            chains_atom_mask=denovo_atom_mask,
-            chains_res_type=denovo_res_type,
-            chains_res_idx=denovo_res_idx,
-            suffix=fout.split('.')[-1],
+        fallback_bundle = bundle_from_models(chain_models)
+        write_imp_outputs(
+            out_dir=out_dir,
+            untrimmed_bundle=fallback_bundle,
+            trimmed_bundle=fallback_bundle,
+            fallback=True,
         )
-        print(f"Write original chains to {fout}")
-
-        fout = pjoin(out_dir, "imp_chains_trimmed.cif")
-        chains_atom_pos_to_pdb(
-            filename=fout,
-            chains_atom_pos=denovo_atom_pos,
-            chains_atom_mask=denovo_atom_mask,
-            chains_res_type=denovo_res_type,
-            chains_res_idx=denovo_res_idx,
-            suffix=fout.split('.')[-1],
-        )
-        print(f"Write original chains to {fout}")
 
     te = time.time()
     #print("Time consuming = {:.4f}".format(te - ts))
+
+
+def main(args):
+    temp_context_dir = pjoin(abspath(args.output), "alignments")
+    context = build_template_refine_context(
+        chain_paths=args.chain or [],
+        template_paths=args.template or [],
+        lib_dir=args.lib,
+        work_dir=temp_context_dir,
+        seq_path=args.seq,
+        verbose=args.verbose,
+        debug=getattr(args, "debug", False),
+        prepare_domains_flag=False,
+    )
+    return run_with_context(args, context)
 
 
 if __name__ == '__main__':

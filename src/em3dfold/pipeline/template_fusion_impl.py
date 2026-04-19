@@ -13,7 +13,8 @@ from em3dfold.template.pipeline import (
     denovo_imp_pipeline,
     preprocess,
 )
-from em3dfold.template.utils.misc_utils import abspath, pjoin
+from em3dfold.template.pipeline.template_refine import build_template_refine_context
+from em3dfold.utils.misc_utils import abspath, pjoin
 
 
 def print(*args, **kwargs):
@@ -181,29 +182,47 @@ def main(args):
         os.makedirs(path, exist_ok=True)
 
     if has_templates:
-        print("# Run fix pipeline")
-        fix_args = argparse.Namespace(
-            seq=seq_path,
-            chain=denovo_chains,
-            template=template_paths,
-            lib=lib_dir,
-            output=fix_dir,
+        shared_context_dir = pjoin(temp_dir, "shared_context")
+        os.makedirs(shared_context_dir, exist_ok=True)
+        print("# Build shared template refinement context")
+        shared_context = build_template_refine_context(
+            chain_paths=denovo_chains,
+            template_paths=template_paths,
+            lib_dir=lib_dir,
+            work_dir=shared_context_dir,
+            seq_path=seq_path,
             verbose=args.verbose,
             debug=args.debug,
+            prepare_domains_flag=True,
         )
-        denovo_fix_pipeline.main(fix_args)
+        print(f"# Shared protein template count = {len(shared_context.templates)}")
 
-        print("# Run imp pipeline")
-        imp_args = argparse.Namespace(
-            seq=seq_path,
-            chain=denovo_chains,
-            template=template_paths,
-            lib=lib_dir,
-            output=imp_dir,
-            verbose=args.verbose,
-            debug=args.debug,
-        )
-        denovo_imp_pipeline.main(imp_args)
+        if len(shared_context.templates) == 0:
+            print("# No valid protein templates remain after filtering, skip fix/imp")
+        else:
+            print("# Run fix pipeline")
+            fix_args = argparse.Namespace(
+                seq=seq_path,
+                chain=denovo_chains,
+                template=template_paths,
+                lib=lib_dir,
+                output=fix_dir,
+                verbose=args.verbose,
+                debug=args.debug,
+            )
+            denovo_fix_pipeline.run_with_context(fix_args, shared_context)
+
+            print("# Run imp pipeline")
+            imp_args = argparse.Namespace(
+                seq=seq_path,
+                chain=denovo_chains,
+                template=template_paths,
+                lib=lib_dir,
+                output=imp_dir,
+                verbose=args.verbose,
+                debug=args.debug,
+            )
+            denovo_imp_pipeline.run_with_context(imp_args, shared_context)
     else:
         print("# No template provided, assemble will fall back to de novo inputs")
 

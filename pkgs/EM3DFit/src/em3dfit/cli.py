@@ -209,7 +209,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.mcp:
         with stage_timer("write mcp pdb"):
             write_mcp_pdb(output_path, ldps, ldps_dens)
-        log_message(f"write MCP to PDB {output_path}")
+        log_message(f"write MCP structure to {output_path}")
         return 0
 
     if args.score:
@@ -219,7 +219,7 @@ def main(argv: list[str] | None = None) -> int:
                 chain.scores = score_chain_against_ldps(chain, ldps, ldps_dens, params)
         with stage_timer("write scored pdb"):
             write_scored_pdb(model, output_path)
-        log_message(f"write scored PDB to {output_path}")
+        log_message(f"write scored structure to {output_path}")
         return 0
 
     log_message("running rigid/flexible assembly")
@@ -242,5 +242,5 @@ def main(argv: list[str] | None = None) -> int:
         )
     with stage_timer("write fitted pdb"):
         write_fitted_pdb(model, output_path)
-    log_message(f"write fitted PDB to {output_path}")
+    log_message(f"write fitted structure to {output_path}")
     return 0

@@ -95,6 +95,7 @@ EM_WEIGHTS_DIR=/path/to/weights em3dfold build --map ...
 - You can provide only `--protein`, only `--rna`, only `--dna`, or any valid combination of them.
 - If you launch >1 modeling job, the output directory **must** be different for each run.
 - Input protein template(s) can either be a single chain PDB/mmCIF file or a multi-chain PDB/mmCIF file.
+- Template rigid fitting is handled by `src/em3dfold/pipeline/fit.py`; the legacy `src/em3dfold/template/pipeline/dock_pipeline.py` pipeline has been removed.
 - By default, intermediate results (predicted maps recycled structures) will be removed. Use `--keep-temp-files` if you want to keep them. 
 - Currently, only supports protein templates, nucleic-acids support depends on the community needs.
 

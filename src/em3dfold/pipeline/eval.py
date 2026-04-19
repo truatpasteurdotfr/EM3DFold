@@ -6,6 +6,7 @@ import numpy as np
 from scipy.spatial import KDTree
 
 from em3dfold.io.pdbio import read_pdb
+from em3dfold.utils.geometry import kabsch
 
 warnings.filterwarnings("ignore")
 
@@ -14,33 +15,6 @@ PROTEIN_LABEL = "protein"
 NUCLEIC_LABEL = "nucleic"
 COMPLEX_LABEL = "complex"
 ALL_MOL_TYPES = (PROTEIN_LABEL, NUCLEIC_LABEL, COMPLEX_LABEL)
-
-
-def kabsch(P: np.ndarray, Q: np.ndarray):
-    if P.shape != Q.shape:
-        raise ValueError(f"P and Q must have the same shape, got {P.shape} and {Q.shape}")
-    if P.ndim != 2 or P.shape[1] != 3:
-        raise ValueError(f"P and Q must have shape (N, 3), got {P.shape}")
-    if P.shape[0] < 1:
-        raise ValueError("Need at least one point")
-
-    centroid_P = P.mean(axis=0)
-    centroid_Q = Q.mean(axis=0)
-
-    P_centered = P - centroid_P
-    Q_centered = Q - centroid_Q
-
-    H = P_centered.T @ Q_centered
-    U, _, Vt = np.linalg.svd(H)
-    R = Vt.T @ U.T
-
-    if np.linalg.det(R) < 0:
-        Vt[-1, :] *= -1
-        R = Vt.T @ U.T
-
-    t = centroid_Q - centroid_P @ R.T
-    P_aligned = P @ R.T + t
-    return R, t, P_aligned
 
 
 def add_args(parser):
@@ -176,7 +150,7 @@ def eval_local(
 
     if align:
         print("# Align mode")
-        R, t, _ = kabsch(
+        R, t = kabsch(
             query_anchor_pos_eval[correspondence[:, 0]],
             target_anchor_pos[correspondence[:, 1]],
         )

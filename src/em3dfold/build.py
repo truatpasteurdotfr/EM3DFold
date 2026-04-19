@@ -7,7 +7,12 @@ import argparse
 import tempfile
 from pathlib import Path
 
-from em3dfold.io.pdbio import fix_quotes, read_pdb, chains_atom_pos_to_pdb
+from em3dfold.io.pdbio import (
+    chains_atom_pos_to_pdb,
+    convert_to_chains,
+    fix_quotes,
+    read_pdb,
+)
 from em3dfold.io.seqio import read_fasta
 from em3dfold.utils.misc_utils import pjoin, abspath
 from em3dfold.utils.torch_utils import clear_cuda_cache
@@ -66,6 +71,7 @@ def add_args(parser):
     skip_group.add_argument("--skip-imp",  action='store_true', help=argparse.SUPPRESS)
     skip_group.add_argument("--skip-fix",  action='store_true', help=argparse.SUPPRESS)
     skip_group.add_argument("--skip-fit",  action='store_true', help=argparse.SUPPRESS)
+    skip_group.add_argument("--skip-assemble", action='store_true', help=argparse.SUPPRESS)
     return parser
 
 
@@ -263,12 +269,16 @@ def _extract_protein_template_chains(template_paths, temp_dir):
         unique_chain_indices = np.unique(chain_idx)
         for chain_local_idx, source_chain_idx in enumerate(unique_chain_indices):
             chain_mask = chain_idx == source_chain_idx
-            output_path = pjoin(
+            output_cif_path = pjoin(
                 template_dir,
                 f"template_{template_idx}_chain_{chain_local_idx}.cif",
             )
+            output_pdb_path = pjoin(
+                template_dir,
+                f"template_{template_idx}_chain_{chain_local_idx}.pdb",
+            )
             chains_atom_pos_to_pdb(
-                output_path,
+                output_cif_path,
                 chains_atom_pos=[atom_pos[chain_mask]],
                 chains_atom_mask=[atom_mask[chain_mask]],
                 chains_res_type=[res_type[chain_mask]],
@@ -277,14 +287,78 @@ def _extract_protein_template_chains(template_paths, temp_dir):
                 chains_bfactor=[bfactor[chain_mask]],
                 suffix="cif",
             )
-            written_paths.append(output_path)
-            print(f"# Write protein template chain to {output_path}")
+            chains_atom_pos_to_pdb(
+                output_pdb_path,
+                chains_atom_pos=[atom_pos[chain_mask]],
+                chains_atom_mask=[atom_mask[chain_mask]],
+                chains_res_type=[res_type[chain_mask]],
+                chains_res_idx=[res_idx[chain_mask]],
+                chains_idx=[0],
+                chains_bfactor=[bfactor[chain_mask]],
+                suffix="pdb",
+            )
+            written_paths.append(output_pdb_path)
+            print(f"# Write protein template chain to {output_cif_path}")
+            print(f"# Write protein template chain to {output_pdb_path}")
 
     if written_paths:
         print(f"# Extracted {len(written_paths)} protein template chains into {template_dir}")
     else:
         print("# No protein template chains were extracted")
     return written_paths
+
+
+def _split_structure_to_chains(structure_path, output_dir, *, protein_only=False, suffix="pdb"):
+    import numpy as np
+
+    os.makedirs(output_dir, exist_ok=True)
+    atom_pos, atom_mask, res_type, res_idx, chain_idx, bfactor = read_pdb(
+        structure_path,
+        keep_valid=False,
+        return_bfactor=True,
+    )
+
+    if protein_only:
+        protein_mask = res_type < 20
+        if not np.any(protein_mask):
+            return []
+        atom_pos = atom_pos[protein_mask]
+        atom_mask = atom_mask[protein_mask]
+        res_type = res_type[protein_mask]
+        res_idx = res_idx[protein_mask]
+        chain_idx = chain_idx[protein_mask]
+        bfactor = bfactor[protein_mask]
+
+    (
+        chains_atom_pos,
+        chains_atom_mask,
+        chains_res_type,
+        chains_res_idx,
+        chains_bfactor,
+    ) = convert_to_chains(
+        chain_idx,
+        atom_pos,
+        atom_mask,
+        res_type,
+        res_idx,
+        bfactor,
+    )
+
+    output_paths = []
+    for chain_local_idx in range(len(chains_atom_pos)):
+        output_path = pjoin(output_dir, f"chain_{chain_local_idx}.{suffix}")
+        chains_atom_pos_to_pdb(
+            output_path,
+            chains_atom_pos=[chains_atom_pos[chain_local_idx]],
+            chains_atom_mask=[chains_atom_mask[chain_local_idx]],
+            chains_res_type=[chains_res_type[chain_local_idx]],
+            chains_res_idx=[chains_res_idx[chain_local_idx]],
+            chains_idx=[0],
+            chains_bfactor=[chains_bfactor[chain_local_idx]],
+            suffix=suffix,
+        )
+        output_paths.append(output_path)
+    return output_paths
 
 
 def _has_cli_sequence_arg(input_seq_path):
@@ -477,8 +551,9 @@ def main(args):
     print(f"# inferlm weights dir: {all_atom_weights_dir}")
     print(f"# Temp root dir: {temp_dir}")
 
+    template_chain_paths = []
     if args.protein_template:
-        _extract_protein_template_chains(args.protein_template, temp_dir)
+        template_chain_paths = _extract_protein_template_chains(args.protein_template, temp_dir)
 
     has_protein_arg = _has_cli_sequence_arg(args.protein)
     has_rna_arg = _has_cli_sequence_arg(args.rna)
@@ -715,48 +790,202 @@ def main(args):
     fo = pjoin(out_dir, "output.cif")
     fo_entropy = pjoin(out_dir, "output_entropy_score.cif")
 
-    has_output = False
-    if final_denovo is not None and os.path.exists(final_denovo):
-        shutil.copy(final_denovo, fo)
-        has_output = True
-        fix_quotes(fo)
     if final_entropy is not None and os.path.exists(final_entropy):
         shutil.copy(final_entropy, fo_entropy)
         fix_quotes(fo_entropy)
 
+    fix_output_dir = None
+    imp_output_dir = None
     fit_output_dir = None
-    if args.protein_template and (not args.skip_fit):
+    fit_total_path = None
+    template_candidate_paths = []
+
+    if template_chain_paths:
+        if protein_seq_path is None:
+            print("# Protein sequence is unavailable, skip template fix/imp")
+        elif final_denovo is None or (not os.path.exists(final_denovo)):
+            print("# De novo protein model is unavailable, skip template fix/imp")
+        else:
+            protein_chain_dir = pjoin(temp_dir, "template_refine", "denovo_protein_chains")
+            denovo_protein_chain_paths = _split_structure_to_chains(
+                final_denovo,
+                protein_chain_dir,
+                protein_only=True,
+                suffix="pdb",
+            )
+            if not denovo_protein_chain_paths:
+                print("# No protein chains were found in the de novo model, skip template fix/imp")
+            else:
+                from em3dfold.template.pipeline import denovo_fix_pipeline, denovo_imp_pipeline
+                from em3dfold.template.pipeline.template_refine import build_template_refine_context
+
+                shared_context_dir = pjoin(temp_dir, "template_refine", "shared_context")
+                os.makedirs(shared_context_dir, exist_ok=True)
+                shared_context = build_template_refine_context(
+                    chain_paths=denovo_protein_chain_paths,
+                    template_paths=template_chain_paths,
+                    lib_dir=script_dir,
+                    work_dir=shared_context_dir,
+                    seq_path=protein_seq_path,
+                    verbose=False,
+                    debug=False,
+                    prepare_domains_flag=True,
+                )
+                print(f"# Shared protein template count = {len(shared_context.templates)}")
+
+                if len(shared_context.templates) == 0:
+                    print("# No valid protein templates remain after filtering, skip template fix/imp")
+                else:
+                    if not args.skip_fix:
+                        print("# Run template fix")
+                        start = time.time()
+                        fix_output_dir = pjoin(temp_dir, "fix")
+                        fix_args = argparse.Namespace(
+                            seq=protein_seq_path,
+                            chain=denovo_protein_chain_paths,
+                            template=template_chain_paths,
+                            lib=script_dir,
+                            output=fix_output_dir,
+                            verbose=False,
+                            debug=False,
+                        )
+                        denovo_fix_pipeline.run_with_context(fix_args, shared_context)
+                        end = time.time()
+                        print("# Time = {:.4f}".format(end - start))
+                    else:
+                        print("# Skip template fix")
+
+                    if not args.skip_imp:
+                        print("# Run template imp")
+                        start = time.time()
+                        imp_output_dir = pjoin(temp_dir, "imp")
+                        imp_args = argparse.Namespace(
+                            seq=protein_seq_path,
+                            chain=denovo_protein_chain_paths,
+                            template=template_chain_paths,
+                            lib=script_dir,
+                            output=imp_output_dir,
+                            verbose=False,
+                            debug=False,
+                        )
+                        denovo_imp_pipeline.run_with_context(imp_args, shared_context)
+                        end = time.time()
+                        print("# Time = {:.4f}".format(end - start))
+                    else:
+                        print("# Skip template imp")
+    elif args.protein_template:
+        print("# No protein template chains were extracted, skip template fix/imp/fit")
+
+    if template_chain_paths and (not args.skip_fit):
         fit_map_path = _first_existing_path(
+            pjoin(temp_dir, "pred", "mc.mrc"),
             pjoin(temp_dir, "format_map.mrc"),
             args.map,
         )
         if fit_map_path is None or (not os.path.exists(fit_map_path)):
             raise FileNotFoundError("Cannot find a density map for template domain fitting.")
 
-        print("# Run protein-template domain rigid fitting")
+        print("# Run protein-template rigid fitting")
         start = time.time()
         from em3dfold.pipeline import fit as template_fit
 
-        fit_output_dir = pjoin(temp_dir, "template_fit")
+        fit_output_dir = pjoin(temp_dir, "fit")
         fit_args = argparse.Namespace()
-        fit_args.protein_template = args.protein_template
+        fit_args.protein_template = template_chain_paths
         fit_args.map = fit_map_path
         fit_args.output = fit_output_dir
         fit_args.resolution = 6.0
         fit_args.threshold = 15.0
-        fit_args.rshift = 3.0
+        fit_args.threshold_ratio = 0.10
+        fit_args.rshift = 1.0
         fit_args.rmerge = 1.0
+        fit_args.rmsdcut1 = 2.5
+        fit_args.rmsdcut2 = 5.0
+        fit_args.rigid_nleast = 5
+        fit_args.rigid_cutoff_score_early = -1.5
+        fit_args.rigid_cutoff_score_late = -0.5
+        fit_args.rigid_skip_short_residues = 50
         fit_args.device = args.device
         fit_args.angle_step = 18.0
         fit_args.fgrid = 3.0
         fit_args.sgrid = 2.0
         fit_args.ntrans = 8
         fit_args.ntop = 10
-        template_fit.main(fit_args)
+        fit_summary = template_fit.main(fit_args)
+        fit_total_path = fit_summary.get("fitted_total_path")
         end = time.time()
         print("# Time = {:.4f}".format(end - start))
-    elif args.protein_template:
+    elif template_chain_paths:
         print("# Skip protein-template rigid fitting")
+
+    if imp_output_dir is not None:
+        imp_trimmed = pjoin(imp_output_dir, "imp_chains_trimmed.cif")
+        if os.path.exists(imp_trimmed):
+            template_candidate_paths.append(imp_trimmed)
+    if fix_output_dir is not None:
+        fix_chains = pjoin(fix_output_dir, "fix_chains_templs.cif")
+        if os.path.exists(fix_chains):
+            template_candidate_paths.append(fix_chains)
+    if fit_total_path is not None and os.path.exists(fit_total_path):
+        template_candidate_paths.append(fit_total_path)
+
+    assemble_output_dir = None
+    assembled_output_path = None
+    has_template_candidates = len(template_candidate_paths) > 0
+    assemble_candidate_paths = list(template_candidate_paths)
+    if (not has_template_candidates) and final_denovo is not None and os.path.exists(final_denovo):
+        assemble_candidate_paths.append(final_denovo)
+    elif run_nucleic_input and final_denovo is not None and os.path.exists(final_denovo):
+        assemble_candidate_paths.append(final_denovo)
+
+    if not args.skip_assemble:
+        ca_map_path = _first_existing_path(pjoin(temp_dir, "pred", "ca.mrc"))
+        if assemble_candidate_paths and ca_map_path is not None and os.path.exists(ca_map_path):
+            print("# Run assemble")
+            start = time.time()
+            from em3dfold.pipeline import assemble as chain_assemble
+
+            assemble_output_dir = pjoin(temp_dir, "assemble")
+            assemble_args = argparse.Namespace(
+                structure_paths=assemble_candidate_paths,
+                ca_map_path=ca_map_path,
+                output=assemble_output_dir,
+                clash_threshold=0.10,
+                clash_distance=1.0,
+                clash_resolution=5.0,
+                map_percentile=99.9,
+                time_limit=120.0,
+                num_workers=4,
+                log_search_progress=False,
+            )
+            chain_assemble.main(assemble_args)
+            assembled_output_path = pjoin(assemble_output_dir, "assemble.cif")
+            end = time.time()
+            print("# Time = {:.4f}".format(end - start))
+        elif assemble_candidate_paths:
+            print("# CA map is unavailable, skip assemble")
+        else:
+            print("# No structures are available for assemble")
+    else:
+        print("# Skip assemble")
+
+    final_output_path = None
+    for candidate in [
+        assembled_output_path,
+        final_denovo,
+        fit_total_path,
+        pjoin(imp_output_dir, "imp_chains_trimmed.cif") if imp_output_dir else None,
+        pjoin(fix_output_dir, "fix_chains_templs.cif") if fix_output_dir else None,
+    ]:
+        if candidate is not None and os.path.exists(candidate):
+            final_output_path = candidate
+            break
+
+    has_output = False
+    if final_output_path is not None and os.path.exists(final_output_path):
+        shutil.copy(final_output_path, fo)
+        fix_quotes(fo)
+        has_output = True
 
 
     # Remove temp files
@@ -776,8 +1005,14 @@ def main(args):
         print("# You can find the final model at: {}".format(fo))
         if os.path.exists(fo_entropy):
             print("# The residue-type confidence file is at: {}".format(fo_entropy))
+        if fix_output_dir is not None and os.path.exists(fix_output_dir):
+            print("# The template fix results are at: {}".format(fix_output_dir))
+        if imp_output_dir is not None and os.path.exists(imp_output_dir):
+            print("# The template imp results are at: {}".format(imp_output_dir))
         if fit_output_dir is not None and os.path.exists(fit_output_dir):
-            print("# The template rigid-fitting results are at: {}".format(fit_output_dir))
+            print("# The template fit results are at: {}".format(fit_output_dir))
+        if assemble_output_dir is not None and os.path.exists(assemble_output_dir):
+            print("# The assembled selection results are at: {}".format(assemble_output_dir))
         if args.keep_temp_files:
             print("# Intermediate files are kept in: {}".format(temp_dir))
         print("#" + " " + "-" * 70)

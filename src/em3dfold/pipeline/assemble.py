@@ -18,7 +18,7 @@ import numpy as np
 from scipy.ndimage import map_coordinates
 
 from em3dfold.io.pdbio import chains_atom_pos_to_pdb, convert_to_chains, read_pdb
-from em3dfold.template.utils.clashx import get_clash
+from em3dfold.utils.clash_utils import get_clash
 from em3dfold.utils.cryo_utils import read_map
 from em3dfold.utils.misc_utils import abspath, pjoin
 

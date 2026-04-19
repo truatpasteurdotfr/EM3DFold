@@ -62,3 +62,6 @@ pkgs/*/.tmp-tests/
 Thumbs.db
 .vscode/
 .idea/
+
+# Ignored binaries
+src/em3dfold/bin/USalign_windows.exe

@@ -9,10 +9,14 @@ try:
     import cupy as cp
     cupy_is_available = True
 except ImportError:
+    cp = None
     cupy_is_available = False
 
 from em3dfold.interp.interp3d import Interp3d
-from em3dfold.interp.interp3d_cupy import Interp3d as Interp3d_cupy
+if cupy_is_available:
+    from em3dfold.interp.interp3d_cupy import Interp3d as Interp3d_cupy
+else:
+    Interp3d_cupy = None
 
 '''parse_map, pad_map, split_map_into_overlapped_chunks, get_map_from_overlapped_chunks, write_map'''
 def split_map_into_overlapped_chunks(map, box_size, stride, dtype=np.float32, padding=0.0):
@@ -125,6 +129,8 @@ def parse_map(map_file, ignorestart, apix=None, origin_shift=None, device="cpu")
         interp3d = Interp3d()
         print("# Interpolation using CPU, accelerated by numba")
     elif 'cuda' in device:
+        if Interp3d_cupy is None or cp is None:
+            raise ImportError("cupy is required for CUDA interpolation")
         interp3d = Interp3d_cupy()
         gpu_id = int(device.replace("cuda:", ""))
         print("# Interpolation using GPU = {}".format(gpu_id))
