@@ -1056,8 +1056,6 @@ def main(args):
         progress("")
         progress("Modeling complete. EM3DFold finished successfully.")
         progress("Thanks for waiting. Your model is ready.")
-        if args.keep_temp_files:
-            progress("Temporary files: {}".format(temp_dir))
         progress("Final model: {}".format(fo))
         if os.path.exists(fo_entropy):
             progress("Residue-type confidence file: {}".format(fo_entropy))
