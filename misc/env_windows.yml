@@ -1,0 +1,47 @@
+name: em3dfold
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pip=23.3.1
+  - setuptools=68.2.2
+  - pytorch=2.2.2
+  - pytorch-cuda=11.8
+  - numpy=1.26.4
+  - scipy=1.11.4
+  - numba=0.59.1
+  - tqdm=4.66.5
+  - biopython=1.86
+  - einops=0.8.1
+  - mrcfile=1.5.4
+  - pillow=10.0.1
+  - pip:
+      - fair-esm==2.0.0
+      - omegaconf==2.3.0
+      - ortools==9.4.1874
+      - pydssp==0.9.1
+      - gdown==5.2.0
+      - ml_collections==1.1.0
+      - absl-py==2.3.1
+      - beautifulsoup4==4.14.2
+      - PySocks==1.7.1
+      - soupsieve==2.8
+
+# Notes
+# - This Windows environment targets EM3DFold core workflows and editable installs
+#   of the local packages after environment creation.
+# - PyTorch is configured as the GPU build via `pytorch-cuda=11.8`.
+# - `numpy` is pinned to the 1.x line to avoid the PyTorch/NumPy ABI issue seen in
+#   the current Windows debug environment.
+# - `pyhmmer` is intentionally omitted. There is no readily usable win-64 conda
+#   package in the current channels, and pip installation requires MSVC/NMake
+#   toolchains that are not present on this machine. HMM-based sequence-alignment
+#   steps will therefore still need manual Windows toolchain setup or WSL/Linux.
+# - `cupy` is intentionally omitted. Even with GPU PyTorch, EM3DFold map
+#   interpolation will still fall back to CPU numba on Windows.
+# - `flash-attn` is intentionally omitted because the vendored RiNALMo dependency is
+#   Linux-oriented. As a result, RiNALMo-dependent RNA language-model steps are still
+#   expected to need WSL/Linux or additional compatibility work.

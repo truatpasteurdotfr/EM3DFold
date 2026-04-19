@@ -7,10 +7,10 @@ import os
 import shutil
 
 from em3dfold.io.pdbio import chains_atom_pos_to_pdb, convert_to_chains, read_pdb
+from em3dfold.pipeline import assemble as chain_assemble
 from em3dfold.template.pipeline import (
-    assemble as template_assemble,
-    denovo_fix_pipeline,
-    denovo_imp_pipeline,
+    fix_pipeline,
+    imp_pipeline,
     preprocess,
 )
 from em3dfold.template.pipeline.template_refine import build_template_refine_context
@@ -210,7 +210,7 @@ def main(args):
                 verbose=args.verbose,
                 debug=args.debug,
             )
-            denovo_fix_pipeline.run_with_context(fix_args, shared_context)
+            fix_pipeline.run_with_context(fix_args, shared_context)
 
             print("# Run imp pipeline")
             imp_args = argparse.Namespace(
@@ -222,7 +222,7 @@ def main(args):
                 verbose=args.verbose,
                 debug=args.debug,
             )
-            denovo_imp_pipeline.run_with_context(imp_args, shared_context)
+            imp_pipeline.run_with_context(imp_args, shared_context)
     else:
         print("# No template provided, assemble will fall back to de novo inputs")
 
@@ -234,16 +234,22 @@ def main(args):
 
     print("# Run assemble stage")
     assemble_args = argparse.Namespace(
-        seq=seq_path,
-        pdb=assemble_inputs,
-        map=map_path,
-        verbose=args.verbose,
-        lib=lib_dir,
+        seq_path=seq_path,
+        lib_dir=lib_dir,
         no_split=args.no_split,
-        out=assemble_dir,
         debug=args.debug,
+        structure_paths=assemble_inputs,
+        ca_map_path=map_path,
+        output=assemble_dir,
+        clash_threshold=0.10,
+        clash_distance=1.0,
+        clash_resolution=5.0,
+        map_percentile=99.9,
+        time_limit=120.0,
+        num_workers=4,
+        log_search_progress=False,
     )
-    template_assemble.main(assemble_args)
+    chain_assemble.main(assemble_args)
 
     final_output = pjoin(assemble_dir, "assemble.cif")
 

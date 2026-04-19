@@ -1,4 +1,4 @@
-"""EM3DFold wrapper interface for EM3DFit domain rigid fitting.
+"""EM3DFold template fit pipeline built on EM3DFit.
 
 This module is an EM3DFold-side pipeline entrypoint. It prepares template
 chains/domains and then calls the actual rigid-fitting/assembly implementation
@@ -431,7 +431,7 @@ def _fit_domain_group(
     return fit_results, grouped_fitted_path
 
 
-def run_template_domain_fitting(
+def run_fit_pipeline(
     template_paths,
     map_path,
     output_dir,
@@ -643,7 +643,7 @@ def add_args(parser):
 
 
 def main(args):
-    return run_template_domain_fitting(
+    return run_fit_pipeline(
         template_paths=args.protein_template,
         map_path=args.map,
         output_dir=args.output,

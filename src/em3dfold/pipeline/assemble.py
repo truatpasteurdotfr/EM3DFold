@@ -1,6 +1,6 @@
 """Assemble chains by selecting a non-clashing high-scoring protein subset.
 
-This entrypoint scores every protein chain against an input ``ca.mrc`` map,
+This entrypoint scores every protein chain against an input density map,
 computes pairwise protein-protein clashes, and then uses OR-Tools CP-SAT to
 select the maximum-score compatible subset. Nucleic-acid chains are kept by
 default and do not participate in scoring or clash detection.
@@ -12,12 +12,16 @@ import argparse
 import builtins
 import json
 import os
+import re
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import numpy as np
 from scipy.ndimage import map_coordinates
 
 from em3dfold.io.pdbio import chains_atom_pos_to_pdb, convert_to_chains, read_pdb
+from em3dfold.io.seqio import nwalign_fast, read_fasta, std_aa_seq
+from em3dfold.polymer_utils.residue_constants import index_to_restype_1
 from em3dfold.utils.clash_utils import get_clash
 from em3dfold.utils.cryo_utils import read_map
 from em3dfold.utils.misc_utils import abspath, pjoin
@@ -48,6 +52,7 @@ class ChainRecord:
     bfactor: np.ndarray
     residue_count: int
     ca_count: int
+    built_type: int = 0
     score: float | None = None
     keep: bool = False
     keep_reason: str | None = None
@@ -89,6 +94,13 @@ def _classify_chain(chain_res_type):
     if is_nucleic:
         return "nucleic"
     return "mixed"
+
+
+def _infer_built_type(input_path):
+    lower_path = str(input_path).lower()
+    if "fix" in lower_path or "imp" in lower_path:
+        return 1
+    return 0
 
 
 def _ca_positions(chain_record):
@@ -139,6 +151,7 @@ def _load_chain_records(structure_paths):
                 bfactor=np.asarray(chains_bfactor[source_chain_index], dtype=np.float32),
                 residue_count=len(chain_res_type),
                 ca_count=0,
+                built_type=_infer_built_type(structure_path),
             )
             chain_record.ca_count = len(_ca_positions(chain_record))
             chain_records.append(chain_record)
@@ -155,6 +168,151 @@ def _load_chain_records(structure_paths):
     if not chain_records:
         raise ValueError("No chains were parsed from the input structures.")
     return chain_records
+
+
+def _split_matched_fragments(input_string, tolerance=10):
+    pattern = re.compile(r"[:]+(?: {1," + str(tolerance) + r"}[:]+)*")
+    return list(pattern.finditer(input_string))
+
+
+def _alignment_indices(seq):
+    idxs = []
+    idx = 0
+    for residue in seq:
+        if residue != "-":
+            idxs.append(idx)
+            idx += 1
+        else:
+            idxs.append(-1)
+    return np.asarray(idxs, dtype=np.int32)
+
+
+def _slice_chain_record(chain_record, residue_indices):
+    residue_indices = np.asarray(residue_indices, dtype=np.int32)
+    fragment = ChainRecord(
+        global_index=-1,
+        input_path=chain_record.input_path,
+        input_file_index=chain_record.input_file_index,
+        source_chain_index=chain_record.source_chain_index,
+        chain_type=chain_record.chain_type,
+        atom_pos=np.asarray(chain_record.atom_pos[residue_indices], dtype=np.float32),
+        atom_mask=np.asarray(chain_record.atom_mask[residue_indices], dtype=np.int32),
+        res_type=np.asarray(chain_record.res_type[residue_indices], dtype=np.int32),
+        res_idx=np.asarray(chain_record.res_idx[residue_indices], dtype=np.int32),
+        bfactor=np.asarray(chain_record.bfactor[residue_indices], dtype=np.float32),
+        residue_count=int(len(residue_indices)),
+        ca_count=0,
+        built_type=chain_record.built_type,
+    )
+    fragment.ca_count = len(_ca_positions(fragment))
+    return fragment
+
+
+def _reindex_chain_records(chain_records):
+    for global_index, chain_record in enumerate(chain_records):
+        chain_record.global_index = global_index
+    return chain_records
+
+
+def _split_protein_fragments_by_sequence(chain_records, seq_path, lib_dir, debug):
+    if not seq_path:
+        print("No FASTA provided, skip sequence-based fragment splitting")
+        return _reindex_chain_records(chain_records)
+
+    seqs = [std_aa_seq(seq) for seq in read_fasta(seq_path)]
+    if not seqs:
+        print("No sequences were read from FASTA, skip sequence-based fragment splitting")
+        return _reindex_chain_records(chain_records)
+
+    print(f"Loaded {len(seqs)} sequence(s) for fragment splitting")
+    split_records = []
+    min_fragment_len = 10
+    max_res_gap = 10
+    for chain_record in chain_records:
+        if chain_record.chain_type != "protein":
+            split_records.append(chain_record)
+            continue
+
+        if len(chain_record.res_type) == 0:
+            split_records.append(chain_record)
+            continue
+
+        pdb_seq = "".join(index_to_restype_1[int(x)] for x in chain_record.res_type)
+        if not pdb_seq:
+            split_records.append(chain_record)
+            continue
+
+        best_seqid = -1.0
+        best_alignment = None
+        best_seq_index = -1
+        for seq_index, seq in enumerate(seqs):
+            alignment = nwalign_fast(
+                pdb_seq,
+                seq,
+                lib_dir=lib_dir or "./",
+                debug=debug,
+            )
+            if alignment[0] is None or alignment[1] is None or alignment[2] is None:
+                continue
+            seqid0 = alignment[3]
+            if seqid0 > best_seqid:
+                best_seqid = seqid0
+                best_alignment = alignment
+                best_seq_index = seq_index
+
+        if best_alignment is None:
+            print(
+                "  protein chain {} has no valid sequence alignment, keep as-is".format(
+                    chain_record.global_index
+                )
+            )
+            split_records.append(chain_record)
+            continue
+
+        matches = _split_matched_fragments(best_alignment[1], tolerance=max_res_gap)
+        if not matches:
+            print(
+                "  protein chain {} best seq {} produced no matched fragments, keep as-is".format(
+                    chain_record.global_index,
+                    best_seq_index,
+                )
+            )
+            split_records.append(chain_record)
+            continue
+
+        pdb_alignment_indices = _alignment_indices(best_alignment[0])
+        created = 0
+        for match in matches:
+            if len(match.group(0)) < min_fragment_len:
+                continue
+            start_idx = match.start()
+            end_idx = start_idx + len(match.group(0))
+            residue_indices = pdb_alignment_indices[start_idx:end_idx]
+            residue_indices = residue_indices[residue_indices >= 0]
+            if len(residue_indices) == 0:
+                continue
+            split_records.append(_slice_chain_record(chain_record, residue_indices))
+            created += 1
+
+        if created == 0:
+            print(
+                "  protein chain {} best seq {} kept unsplit after filtering".format(
+                    chain_record.global_index,
+                    best_seq_index,
+                )
+            )
+            split_records.append(chain_record)
+        else:
+            print(
+                "  protein chain {} best seq {} split into {} fragment(s)".format(
+                    chain_record.global_index,
+                    best_seq_index,
+                    created,
+                )
+            )
+
+    print(f"Sequence-based splitting produced {len(split_records)} fragment(s)")
+    return _reindex_chain_records(split_records)
 
 
 def _read_ca_map(map_path):
@@ -198,7 +356,7 @@ def _sample_map_values(points, map_data, origin, voxel_size):
 
 
 def _score_protein_chains(protein_records, map_data, origin, voxel_size):
-    print("Compute protein-chain scores against CA map")
+    print("Compute protein-chain scores against scoring map")
     for chain_record in protein_records:
         ca_pos = _ca_positions(chain_record)
         sampled = _sample_map_values(ca_pos, map_data, origin, voxel_size)
@@ -364,6 +522,7 @@ def _write_selected_chains(output_cif, selected_records):
     if not selected_records:
         raise ValueError("No chains were selected for output.")
 
+    suffix = os.path.splitext(output_cif)[1].lstrip(".").lower() or "cif"
     chains_atom_pos_to_pdb(
         output_cif,
         chains_atom_pos=[record.atom_pos for record in selected_records],
@@ -371,8 +530,16 @@ def _write_selected_chains(output_cif, selected_records):
         chains_res_type=[record.res_type for record in selected_records],
         chains_res_idx=[record.res_idx for record in selected_records],
         chains_bfactor=[record.bfactor for record in selected_records],
-        suffix="cif",
+        suffix=suffix,
     )
+
+
+def _write_partition_output(output_path, selected_records):
+    if not selected_records:
+        return None
+    _write_selected_chains(output_path, selected_records)
+    print(f"Write partitioned assembled chains to {output_path}")
+    return output_path
 
 
 def _record_to_summary(chain_record):
@@ -382,6 +549,7 @@ def _record_to_summary(chain_record):
         "input_file_index": chain_record.input_file_index,
         "source_chain_index": chain_record.source_chain_index,
         "chain_type": chain_record.chain_type,
+        "built_type": chain_record.built_type,
         "residue_count": chain_record.residue_count,
         "ca_count": chain_record.ca_count,
         "score": chain_record.score,
@@ -396,6 +564,10 @@ def run_chain_assemble(
     ca_map_path,
     output,
     *,
+    seq_path=None,
+    lib_dir=None,
+    no_split=False,
+    debug=False,
     clash_threshold=0.10,
     clash_distance=1.0,
     clash_resolution=5.0,
@@ -407,10 +579,19 @@ def run_chain_assemble(
     output_dir, output_cif = _resolve_output_paths(output)
     structure_paths = _resolve_structure_paths(structure_paths)
     chain_records = _load_chain_records(structure_paths)
+    if no_split:
+        print("No split requested, keep input protein chains as-is")
+    else:
+        chain_records = _split_protein_fragments_by_sequence(
+            chain_records,
+            seq_path=seq_path,
+            lib_dir=lib_dir,
+            debug=debug,
+        )
 
     raw_map_data, origin, voxel_size = _read_ca_map(abspath(ca_map_path))
     map_data = _normalize_density_map(raw_map_data, percentile=map_percentile)
-    print(f"Read CA map from {abspath(ca_map_path)}")
+    print(f"Read scoring map from {abspath(ca_map_path)}")
     print(f"Map voxel size = {[float(x) for x in voxel_size]}")
 
     protein_records = [record for record in chain_records if record.chain_type == "protein"]
@@ -471,10 +652,25 @@ def run_chain_assemble(
     _write_selected_chains(output_cif, retained_records)
     print(f"Write assembled chains to {output_cif}")
 
+    denovo_output_cif = _write_partition_output(
+        pjoin(output_dir, "assemble_denovo.cif"),
+        [record for record in retained_records if record.built_type == 0],
+    )
+    template_output_cif = _write_partition_output(
+        pjoin(output_dir, "assemble_fit.cif"),
+        [record for record in retained_records if record.built_type == 1],
+    )
+
     summary = {
         "input_structures": structure_paths,
         "ca_map_path": abspath(ca_map_path),
+        "scoring_map_path": abspath(ca_map_path),
         "output_cif": output_cif,
+        "assemble_denovo_cif": denovo_output_cif,
+        "assemble_fit_cif": template_output_cif,
+        "seq_path": abspath(seq_path) if seq_path else None,
+        "lib_dir": abspath(lib_dir) if lib_dir else None,
+        "no_split": bool(no_split),
         "clash_threshold": clash_threshold,
         "clash_distance": clash_distance,
         "clash_resolution": clash_resolution,
@@ -494,6 +690,29 @@ def run_chain_assemble(
 
 def add_args(parser):
     parser.add_argument(
+        "--seq",
+        dest="seq_path",
+        default=None,
+        help="Optional protein FASTA used for sequence-guided fragment splitting",
+    )
+    parser.add_argument(
+        "--lib",
+        "--lib-dir",
+        dest="lib_dir",
+        default=None,
+        help="Optional library directory kept for compatibility with the legacy template assemble interface",
+    )
+    parser.add_argument(
+        "--no-split",
+        action="store_true",
+        help="Disable legacy sequence-based protein-fragment splitting",
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Raise sequence-splitting alignment errors directly",
+    )
+    parser.add_argument(
         "--pdb",
         "--structure",
         "-p",
@@ -508,7 +727,7 @@ def add_args(parser):
         "-m",
         dest="ca_map_path",
         required=True,
-        help="Input CA density map (e.g. ca.mrc)",
+        help="Input density map used for scoring (typically ca.mrc)",
     )
     parser.add_argument(
         "--out",
@@ -540,7 +759,7 @@ def add_args(parser):
         "--map-percentile",
         type=float,
         default=99.9,
-        help="Upper percentile used to clip and normalize the input CA map before scoring",
+        help="Upper percentile used to clip and normalize the input density map before scoring",
     )
     parser.add_argument(
         "--time-limit",
@@ -567,6 +786,10 @@ def main(args):
         structure_paths=args.structure_paths,
         ca_map_path=args.ca_map_path,
         output=args.output,
+        seq_path=getattr(args, "seq_path", None),
+        lib_dir=getattr(args, "lib_dir", None),
+        no_split=bool(getattr(args, "no_split", False)),
+        debug=bool(getattr(args, "debug", False)),
         clash_threshold=args.clash_threshold,
         clash_distance=args.clash_distance,
         clash_resolution=args.clash_resolution,

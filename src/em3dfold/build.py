@@ -816,7 +816,7 @@ def main(args):
             if not denovo_protein_chain_paths:
                 print("# No protein chains were found in the de novo model, skip template fix/imp")
             else:
-                from em3dfold.template.pipeline import denovo_fix_pipeline, denovo_imp_pipeline
+                from em3dfold.template.pipeline import fix_pipeline, imp_pipeline
                 from em3dfold.template.pipeline.template_refine import build_template_refine_context
 
                 shared_context_dir = pjoin(temp_dir, "template_refine", "shared_context")
@@ -849,7 +849,7 @@ def main(args):
                             verbose=False,
                             debug=False,
                         )
-                        denovo_fix_pipeline.run_with_context(fix_args, shared_context)
+                        fix_pipeline.run_with_context(fix_args, shared_context)
                         end = time.time()
                         print("# Time = {:.4f}".format(end - start))
                     else:
@@ -868,7 +868,7 @@ def main(args):
                             verbose=False,
                             debug=False,
                         )
-                        denovo_imp_pipeline.run_with_context(imp_args, shared_context)
+                        imp_pipeline.run_with_context(imp_args, shared_context)
                         end = time.time()
                         print("# Time = {:.4f}".format(end - start))
                     else:
@@ -887,7 +887,7 @@ def main(args):
 
         print("# Run protein-template rigid fitting")
         start = time.time()
-        from em3dfold.pipeline import fit as template_fit
+        from em3dfold.template.pipeline import fit_pipeline as template_fit
 
         fit_output_dir = pjoin(temp_dir, "fit")
         fit_args = argparse.Namespace()
