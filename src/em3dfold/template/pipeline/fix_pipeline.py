@@ -1,7 +1,6 @@
 import os
 import re
 import time
-import builtins
 import argparse
 import numpy as np
 
@@ -43,13 +42,6 @@ from em3dfold.utils.geometry import (
     apply,
     kabsch,
 )
-
-def print(*args, **kwargs):
-    sep = kwargs.pop("sep", " ")
-    message = sep.join(str(arg) for arg in args)
-    if not message.startswith("# "):
-        message = f"# {message}"
-    builtins.print(message, **kwargs)
 
 def find_matched_frag(seq1, align, seq2, tolerance=2, min_sub_num=5, min_score=0.80, min_seq_id=0.80, verbose=False):
     assert tolerance >= 1

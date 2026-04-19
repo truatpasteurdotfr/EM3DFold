@@ -9,7 +9,6 @@ default and do not participate in scoring or clash detection.
 from __future__ import annotations
 
 import argparse
-import builtins
 import json
 import os
 import re
@@ -28,14 +27,6 @@ from em3dfold.utils.misc_utils import abspath, pjoin
 
 
 SCORE_SCALE = 100
-
-
-def print(*args, **kwargs):
-    sep = kwargs.pop("sep", " ")
-    message = sep.join(str(arg) for arg in args)
-    if not message.startswith("# "):
-        message = f"# {message}"
-    builtins.print(message, **kwargs)
 
 
 @dataclass(slots=True)

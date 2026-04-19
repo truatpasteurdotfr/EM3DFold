@@ -1,7 +1,6 @@
 """Run EM3DFold template-guided assembly on top of de novo models."""
 
 import argparse
-import builtins
 import glob
 import os
 import shutil
@@ -15,14 +14,6 @@ from em3dfold.template.pipeline import (
 )
 from em3dfold.template.pipeline.template_refine import build_template_refine_context
 from em3dfold.utils.misc_utils import abspath, pjoin
-
-
-def print(*args, **kwargs):
-    sep = kwargs.pop("sep", " ")
-    message = sep.join(str(arg) for arg in args)
-    if not message.startswith("# "):
-        message = f"# {message}"
-    builtins.print(message, **kwargs)
 
 
 def _default_template_lib_dir():

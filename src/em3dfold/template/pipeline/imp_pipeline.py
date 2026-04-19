@@ -1,7 +1,6 @@
 import os
 import re
 import time
-import builtins
 import argparse
 import numpy as np
 
@@ -29,13 +28,6 @@ from em3dfold.template.pipeline.template_refine import (
     write_imp_outputs,
 )
 
-
-def print(*args, **kwargs):
-    sep = kwargs.pop("sep", " ")
-    message = sep.join(str(arg) for arg in args)
-    if not message.startswith("# "):
-        message = f"# {message}"
-    builtins.print(message, **kwargs)
 
 from em3dfold.polymer_utils.residue_constants import index_to_restype_1
 

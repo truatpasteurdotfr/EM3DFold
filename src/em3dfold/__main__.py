@@ -8,6 +8,7 @@ def main():
     import time
     import platform
     import importlib
+    import em3dfold
 
     # Check platform
     if platform.system() != "Linux":
@@ -18,8 +19,6 @@ def main():
 
     import argparse
     import warnings
-    import em3dfold
-
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawTextHelpFormatter,
     )

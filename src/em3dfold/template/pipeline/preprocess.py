@@ -1,5 +1,4 @@
 import argparse
-import builtins
 import os
 import shutil
 
@@ -10,14 +9,6 @@ from em3dfold.io.pdbio import chains_atom_pos_to_pdb, read_pdb
 from em3dfold.io.seqio import read_fasta
 from em3dfold.polymer_utils.residue_constants import index_to_restype_1
 from em3dfold.utils.misc_utils import abspath, pjoin
-
-
-def print(*args, **kwargs):
-    sep = kwargs.pop("sep", " ")
-    message = sep.join(str(arg) for arg in args)
-    if not message.startswith("# "):
-        message = f"# {message}"
-    builtins.print(message, **kwargs)
 
 
 def _protein_mask(res_type):
