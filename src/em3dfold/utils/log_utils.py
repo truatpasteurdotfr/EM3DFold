@@ -44,6 +44,16 @@ class _ExactLevelFilter(logging.Filter):
         return record.levelno == self.level
 
 
+class _ExactLoggerAndLevelFilter(logging.Filter):
+    def __init__(self, logger_name: str, level: int):
+        super().__init__()
+        self.logger_name = logger_name
+        self.level = level
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.levelno == self.level and record.name == self.logger_name
+
+
 def normalize_log_message(message: str) -> str:
     message = message.lstrip("\r")
     if message.startswith("# "):
@@ -79,6 +89,7 @@ def _get_logging_state() -> dict[str, Any]:
             "stdout_handler": None,
             "log_path": None,
             "progress_logger_name": "em3d.progress",
+            "stdout_progress_logger_name": "em3d.progress",
             "package_prefixes": tuple(),
             "lock": threading.RLock(),
         }
@@ -219,6 +230,7 @@ def configure_runtime_logging(
     *,
     package_prefixes: Iterable[str],
     progress_logger_name: str,
+    stdout_progress_logger_name: str | None = None,
     verbose: bool = False,
     excluded_prefixes: Iterable[str] = (),
     helper_modules: Iterable[str] = (),
@@ -226,6 +238,7 @@ def configure_runtime_logging(
     output_dir = Path(output_dir).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     log_path = output_dir / "run.log"
+    stdout_progress_logger_name = stdout_progress_logger_name or progress_logger_name
 
     state = _get_logging_state()
     root_logger = logging.getLogger()
@@ -259,7 +272,7 @@ def configure_runtime_logging(
             )
         else:
             stdout_handler.setLevel(PROGRESS_LEVEL)
-            stdout_handler.addFilter(_ExactLevelFilter(PROGRESS_LEVEL))
+            stdout_handler.addFilter(_ExactLoggerAndLevelFilter(stdout_progress_logger_name, PROGRESS_LEVEL))
             stdout_handler.setFormatter(logging.Formatter("%(message)s"))
 
         root_logger.addHandler(file_handler)
@@ -269,6 +282,7 @@ def configure_runtime_logging(
         state["stdout_handler"] = stdout_handler
         state["log_path"] = log_path
         state["progress_logger_name"] = progress_logger_name
+        state["stdout_progress_logger_name"] = stdout_progress_logger_name
         state["package_prefixes"] = tuple(package_prefixes)
 
     install_package_print(
@@ -288,3 +302,8 @@ def progress(message: str, *, logger_name: str | None = None) -> None:
 
 def progress_stage(message: str, *, logger_name: str | None = None) -> None:
     progress(f"----- Stage: {normalize_log_message(message)} -----", logger_name=logger_name)
+
+
+def get_runtime_log_path() -> Path | None:
+    state = _get_logging_state()
+    return state.get("log_path")

@@ -132,7 +132,7 @@ def main():
         configure_runtime_logging(
             runtime_log_dir,
             package_prefixes=("em3dfold", "em3dfit"),
-            progress_logger_name="em3dfold.progress",
+            progress_logger_name=f"em3dfold.{getattr(args, '_module_key', 'main')}.progress",
             verbose=bool(getattr(args, "verbose", False)),
             excluded_prefixes=("em3dfold.rinalmo", "em3dfold.bin.src"),
             helper_modules=(
