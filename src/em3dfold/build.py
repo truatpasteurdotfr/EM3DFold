@@ -8,6 +8,8 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
+import em3dfold
+
 from em3dfold.io.pdbio import (
     chains_atom_pos_to_pdb,
     convert_to_chains,
@@ -20,6 +22,10 @@ from em3dfold.utils.misc_utils import pjoin, abspath
 from em3dfold.utils.torch_utils import clear_cuda_cache
 
 EM_WEIGHTS_ENV_VAR = "EM_WEIGHTS_DIR"
+BUILD_CONTACT_LINES = (
+    f"Version: {getattr(em3dfold, '__version__', 'unknown')}",
+    #"Authors: Tao Li <taoli98@hust.edu.cn>; Sheng-You Huang <huangsy@hust.edu.cn>",
+)
 
 
 def _collect_build_stage_order(template_chain_paths):
@@ -633,6 +639,8 @@ def main(args):
     active_stages = _collect_build_stage_order(template_chain_paths)
 
     progress(f"EM3DFold begin at {_format_wall_time(build_started_at)}")
+    for line in BUILD_CONTACT_LINES:
+        progress(line)
     progress(f"Output: {out_dir}")
     progress(f"Temp dir: {temp_dir}")
     runtime_log_path = get_runtime_log_path()
