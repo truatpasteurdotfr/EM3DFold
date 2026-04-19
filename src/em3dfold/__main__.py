@@ -129,10 +129,19 @@ def main():
     args = parser.parse_args()
     runtime_log_dir = _resolve_runtime_log_dir(args)
     if runtime_log_dir is not None:
+        module_key = getattr(args, "_module_key", "main")
+        stdout_progress_logger_name = f"em3dfold.{module_key}.progress"
+        if module_key == "build":
+            stdout_progress_logger_name = (
+                "em3dfold.build.progress",
+                "em3dfold.pred.progress",
+                "em3dfold.infer.progress",
+            )
         configure_runtime_logging(
             runtime_log_dir,
             package_prefixes=("em3dfold", "em3dfit"),
-            progress_logger_name=f"em3dfold.{getattr(args, '_module_key', 'main')}.progress",
+            progress_logger_name=f"em3dfold.{module_key}.progress",
+            stdout_progress_logger_name=stdout_progress_logger_name,
             verbose=bool(getattr(args, "verbose", False)),
             excluded_prefixes=("em3dfold.rinalmo", "em3dfold.bin.src"),
             helper_modules=(

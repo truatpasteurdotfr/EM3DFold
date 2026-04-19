@@ -20,7 +20,7 @@ from em3dfold.utils.cryo_utils import (
     get_batch_from_generator,
     map_batch_to_map,
 )
-from em3dfold.utils.log_utils import progress, progress_stage
+from em3dfold.utils.log_utils import progress, progress_substage
 from em3dfold.utils.misc_utils import pjoin, abspath
 from em3dfold.utils.torch_utils import clear_cuda_cache
 
@@ -317,7 +317,7 @@ def main(args):
     devices = get_device_names(args.device)
     device = devices[0]
 
-    progress_stage("Start segmentation", logger_name=PROGRESS_LOGGER_NAME)
+    progress_substage("Stage-1 segmentation", logger_name=PROGRESS_LOGGER_NAME)
     inference_segmentation(
         dir_map=dir_map,
         contour=contour,
@@ -330,7 +330,7 @@ def main(args):
     progress("Done segmentation", logger_name=PROGRESS_LOGGER_NAME)
 
     if args.protein:
-        progress_stage("Start protein CA prediction", logger_name=PROGRESS_LOGGER_NAME)
+        progress_substage("Protein CA prediction", logger_name=PROGRESS_LOGGER_NAME)
         inference_protein_ca(
             dir_map=pjoin(dir_out, "prot.mrc"),
             contour=contour,
@@ -343,7 +343,7 @@ def main(args):
         progress("Done protein CA prediction", logger_name=PROGRESS_LOGGER_NAME)
 
     if args.nucleic:
-        progress_stage("Start nucleic C4' prediction", logger_name=PROGRESS_LOGGER_NAME)
+        progress_substage("Nucleic C4' prediction", logger_name=PROGRESS_LOGGER_NAME)
         inference_nucleic_c4(
             dir_map=pjoin(dir_out, "na.mrc"),
             contour=contour,
@@ -355,7 +355,7 @@ def main(args):
         )
         progress("Done nucleic C4' prediction", logger_name=PROGRESS_LOGGER_NAME)
 
-        progress_stage("Start nucleic AA prediction", logger_name=PROGRESS_LOGGER_NAME)
+        progress_substage("Nucleic AA prediction", logger_name=PROGRESS_LOGGER_NAME)
         inference_nucleic_aa(
             dir_map=pjoin(dir_out, "na.mrc"),
             dir_model=pjoin(dir_model, "na", "model_na_aa"),

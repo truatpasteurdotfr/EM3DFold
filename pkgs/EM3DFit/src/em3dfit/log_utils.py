@@ -54,6 +54,25 @@ class _ExactLoggerAndLevelFilter(logging.Filter):
         return record.levelno == self.level and record.name == self.logger_name
 
 
+class _ExactLoggerNamesAndLevelFilter(logging.Filter):
+    def __init__(self, logger_names: Iterable[str], level: int):
+        super().__init__()
+        self.logger_names = tuple(name for name in logger_names if name)
+        self.level = level
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.levelno == self.level and record.name in self.logger_names
+
+
+def _normalize_logger_name_list(logger_names: str | Iterable[str] | None, fallback: str) -> tuple[str, ...]:
+    if logger_names is None:
+        return (fallback,)
+    if isinstance(logger_names, str):
+        return (logger_names,)
+    normalized = tuple(name for name in logger_names if name)
+    return normalized or (fallback,)
+
+
 def normalize_log_message(message: str) -> str:
     message = message.lstrip("\r")
     if message.startswith("# "):
@@ -238,7 +257,10 @@ def configure_runtime_logging(
     output_dir = Path(output_dir).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     log_path = output_dir / "run.log"
-    stdout_progress_logger_name = stdout_progress_logger_name or progress_logger_name
+    stdout_progress_logger_names = _normalize_logger_name_list(
+        stdout_progress_logger_name,
+        progress_logger_name,
+    )
 
     state = _get_logging_state()
     root_logger = logging.getLogger()
@@ -261,7 +283,7 @@ def configure_runtime_logging(
         file_handler.addFilter(
             _AllowPackageLogsFilter(
                 package_prefixes,
-                exact_logger_names=(progress_logger_name, stdout_progress_logger_name),
+                exact_logger_names=(progress_logger_name, *stdout_progress_logger_names),
             )
         )
         file_handler.setFormatter(
@@ -274,7 +296,7 @@ def configure_runtime_logging(
             stdout_handler.addFilter(
                 _AllowPackageLogsFilter(
                     package_prefixes,
-                    exact_logger_names=(progress_logger_name, stdout_progress_logger_name),
+                    exact_logger_names=(progress_logger_name, *stdout_progress_logger_names),
                 )
             )
             stdout_handler.setFormatter(
@@ -282,7 +304,9 @@ def configure_runtime_logging(
             )
         else:
             stdout_handler.setLevel(PROGRESS_LEVEL)
-            stdout_handler.addFilter(_ExactLoggerAndLevelFilter(stdout_progress_logger_name, PROGRESS_LEVEL))
+            stdout_handler.addFilter(
+                _ExactLoggerNamesAndLevelFilter(stdout_progress_logger_names, PROGRESS_LEVEL)
+            )
             stdout_handler.setFormatter(logging.Formatter("%(message)s"))
 
         root_logger.addHandler(file_handler)
@@ -292,7 +316,7 @@ def configure_runtime_logging(
         state["stdout_handler"] = stdout_handler
         state["log_path"] = log_path
         state["progress_logger_name"] = progress_logger_name
-        state["stdout_progress_logger_name"] = stdout_progress_logger_name
+        state["stdout_progress_logger_name"] = stdout_progress_logger_names
         state["package_prefixes"] = tuple(package_prefixes)
 
     install_package_print(
@@ -312,6 +336,10 @@ def progress(message: str, *, logger_name: str | None = None) -> None:
 
 def progress_stage(message: str, *, logger_name: str | None = None) -> None:
     progress(f"----- Stage: {normalize_log_message(message)} -----", logger_name=logger_name)
+
+
+def progress_substage(message: str, *, logger_name: str | None = None) -> None:
+    progress(f"======= Sub-stage: {normalize_log_message(message)} =======", logger_name=logger_name)
 
 
 def get_runtime_log_path() -> Path | None:

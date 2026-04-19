@@ -11,10 +11,12 @@ from omegaconf import OmegaConf
 
 from em3dfold.io.pdbio import chains_atom_pos_to_pdb
 from em3dfold.polymer_utils.polymer import get_polymer_from_file_path
+from em3dfold.utils.log_utils import progress_substage
 from em3dfold.utils.misc_utils import abspath, pjoin
 from em3dfold.utils.torch_utils import clear_cuda_cache, seed_everything
 
 EM_WEIGHTS_ENV_VAR = "EM_WEIGHTS_DIR"
+PROGRESS_LOGGER_NAME = "em3dfold.infer.progress"
 
 
 def load_model_bundle(config_path):
@@ -458,6 +460,10 @@ def run_main(args, model_class, model_args, run_inference_fn):
             args.protein_radius_threshold = 1.00
             args.na_radius_threshold = 2.00
 
+        progress_substage(
+            f"De novo recycle {i + 1}/{n_round_refine}",
+            logger_name=PROGRESS_LOGGER_NAME,
+        )
         print(f"# Infer {i + 1} / {n_round_refine}")
         args.output_dir = os.path.join(output_dir, f"recycle_{i}")
         output_info = run_inference_loop(args, model_class, model_args, run_inference_fn)
