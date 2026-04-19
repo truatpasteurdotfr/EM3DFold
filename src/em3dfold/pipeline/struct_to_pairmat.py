@@ -64,7 +64,7 @@ def _resname_to_dbn_token(resname: str) -> str:
 
 
 def _log_info(message: str):
-    print(f"[Info] {message}", flush=True)
+    print(message, flush=True)
 
 
 def _load_structure(structure_path: str):

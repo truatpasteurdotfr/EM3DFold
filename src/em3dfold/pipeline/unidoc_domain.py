@@ -31,7 +31,7 @@ class ResidueRecord:
 
 
 def _log_stage(message: str):
-    print(f"[Info] {message}", flush=True)
+    print(message, flush=True)
 
 
 def _load_structure(structure_path: str):

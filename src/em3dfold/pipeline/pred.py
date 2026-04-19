@@ -20,6 +20,7 @@ from em3dfold.utils.cryo_utils import (
     get_batch_from_generator,
     map_batch_to_map,
 )
+from em3dfold.utils.log_utils import progress
 from em3dfold.utils.misc_utils import pjoin, abspath
 from em3dfold.utils.torch_utils import clear_cuda_cache
 
@@ -303,6 +304,7 @@ def main(args):
 
     print(f"# Making directory {dir_out}", flush=True)
     os.makedirs(dir_out, exist_ok=True)
+    progress(f"Write logs and outputs to {dir_out}")
 
     if isinstance(args.stride, int):
         assert 12 <= args.stride <= 48, f"Invalid stride = {args.stride} -> 12 <= stride <= 48"
@@ -314,7 +316,7 @@ def main(args):
     devices = get_device_names(args.device)
     device = devices[0]
 
-    print("# Start segmentation")
+    progress("Start segmentation")
     inference_segmentation(
         dir_map=dir_map,
         contour=contour,
@@ -324,10 +326,10 @@ def main(args):
         test_params=test_params,
         device=device,
     )
-    print("# Done segmentation")
+    progress("Done segmentation")
 
     if args.protein:
-        print("# Start protein CA prediction", flush=True)
+        progress("Start protein CA prediction")
         inference_protein_ca(
             dir_map=pjoin(dir_out, "prot.mrc"),
             contour=contour,
@@ -337,10 +339,10 @@ def main(args):
             test_params=test_params,
             device=device,
         )
-        print("# Done protein CA prediction", flush=True)
+        progress("Done protein CA prediction")
 
     if args.nucleic:
-        print("# Start nucleic C4' prediction", flush=True)
+        progress("Start nucleic C4' prediction")
         inference_nucleic_c4(
             dir_map=pjoin(dir_out, "na.mrc"),
             contour=contour,
@@ -350,9 +352,9 @@ def main(args):
             test_params=test_params,
             device=device,
         )
-        print("# Done nucleic C4' prediction", flush=True)
+        progress("Done nucleic C4' prediction")
 
-        print("# Start nucleic AA prediction", flush=True)
+        progress("Start nucleic AA prediction")
         inference_nucleic_aa(
             dir_map=pjoin(dir_out, "na.mrc"),
             dir_model=pjoin(dir_model, "na", "model_na_aa"),
@@ -361,12 +363,13 @@ def main(args):
             test_params=test_params,
             device=device,
         )
-        print("# Done nucleic AA prediction", flush=True)
+        progress("Done nucleic AA prediction")
 
     clear_cuda_cache(device, note="pred")
 
     end = time.time()
     print(f"# Time consuming {end - start:.4f}", flush=True)
+    progress(f"Prediction completed in {end - start:.2f}s")
 
 
 def add_args(parser):

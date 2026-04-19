@@ -23,6 +23,7 @@ from em3dfold.io.seqio import nwalign_fast, read_fasta, std_aa_seq
 from em3dfold.polymer_utils.residue_constants import index_to_restype_1
 from em3dfold.utils.clash_utils import get_clash
 from em3dfold.utils.cryo_utils import read_map
+from em3dfold.utils.log_utils import progress
 from em3dfold.utils.misc_utils import abspath, pjoin
 
 
@@ -568,6 +569,7 @@ def run_chain_assemble(
     log_search_progress=False,
 ):
     output_dir, output_cif = _resolve_output_paths(output)
+    progress("Read input structures for assemble")
     structure_paths = _resolve_structure_paths(structure_paths)
     chain_records = _load_chain_records(structure_paths)
     if no_split:
@@ -582,6 +584,7 @@ def run_chain_assemble(
 
     raw_map_data, origin, voxel_size = _read_ca_map(abspath(ca_map_path))
     map_data = _normalize_density_map(raw_map_data, percentile=map_percentile)
+    progress("Score chains against CA map")
     print(f"Read scoring map from {abspath(ca_map_path)}")
     print(f"Map voxel size = {[float(x) for x in voxel_size]}")
 
@@ -605,6 +608,7 @@ def run_chain_assemble(
 
     if protein_records:
         _score_protein_chains(protein_records, map_data, origin, voxel_size)
+        progress("Solve non-clashing protein subset")
         clash_matrix, pair_summaries = _compute_clash_matrix(
             protein_records,
             clash_threshold=clash_threshold,
@@ -642,6 +646,7 @@ def run_chain_assemble(
     retained_records = [record for record in chain_records if record.keep]
     _write_selected_chains(output_cif, retained_records)
     print(f"Write assembled chains to {output_cif}")
+    progress(f"Write assembled chains to {output_cif}")
 
     denovo_output_cif = _write_partition_output(
         pjoin(output_dir, "assemble_denovo.cif"),
@@ -676,6 +681,7 @@ def run_chain_assemble(
     with open(summary_path, "w", encoding="utf-8") as handle:
         json.dump(summary, handle, indent=2)
     print(f"Write assembly summary to {summary_path}")
+    progress(f"Write assembly summary to {summary_path}")
     return summary
 
 

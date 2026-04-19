@@ -3,12 +3,31 @@ Automated Protein, DNA and RNA structure modeling from cryo-EM maps
 Tao Li et al.
 """
 
+from pathlib import Path
+
+
+def _resolve_runtime_log_dir(args):
+    for attr_name in ("output", "output_dir", "out_dir"):
+        value = getattr(args, attr_name, None)
+        if not value:
+            continue
+        path = Path(value).expanduser()
+        if path.suffix.lower() in {".pdb", ".cif", ".mrc", ".map", ".json", ".npz", ".npy", ".txt", ".log"}:
+            return path.parent
+        return path
+
+    output_pdb = getattr(args, "output_pdb", None)
+    if output_pdb:
+        return Path(output_pdb).expanduser().parent
+    return None
+
 
 def main():
     import time
     import platform
     import importlib
     import em3dfold
+    from em3dfold.utils.log_utils import configure_runtime_logging
 
     # Check platform
     if platform.system() != "Linux":
@@ -93,16 +112,30 @@ def main():
                         module_path
                     )
                 )
-            module_parser.set_defaults(func=module.main)
+            module_parser.set_defaults(func=module.main, _module_key=key)
         else:
             def _raise_unavailable(_args, module_path=module_path, module_error=module_error):
                 raise RuntimeError(
                     "Failed to import module {}: {}".format(module_path, module_error)
                 )
 
-            module_parser.set_defaults(func=_raise_unavailable)
+            module_parser.set_defaults(func=_raise_unavailable, _module_key=key)
 
     args = parser.parse_args()
+    runtime_log_dir = _resolve_runtime_log_dir(args)
+    if runtime_log_dir is not None:
+        configure_runtime_logging(
+            runtime_log_dir,
+            package_prefixes=("em3dfold", "em3dfit"),
+            progress_logger_name="em3dfold.progress",
+            excluded_prefixes=("em3dfold.rinalmo", "em3dfold.bin.src"),
+            helper_modules=(
+                "em3dfold.utils.log_utils",
+                "em3dfold.utils.misc_utils",
+                "em3dfit.log_utils",
+                "em3dfit.utils",
+            ),
+        )
     args.func(args)
 
 if __name__ == '__main__':
