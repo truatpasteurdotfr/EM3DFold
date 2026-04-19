@@ -5,6 +5,7 @@ import time
 import shutil
 import argparse
 import tempfile
+from datetime import datetime
 from pathlib import Path
 
 from em3dfold.io.pdbio import (
@@ -43,6 +44,11 @@ def _finish_build_stage(start_time=None, *, skipped=False):
 def _emit_stage_runtime_hint(stage_name):
     if stage_name in {"pred", "denovo"}:
         progress("This stage may take a few minutes if the map/structure is large.")
+
+
+def _format_wall_time(timestamp=None):
+    dt = datetime.now() if timestamp is None else datetime.fromtimestamp(timestamp)
+    return dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
 def add_args(parser):
@@ -414,6 +420,51 @@ def _resolve_nonempty_seq_path(cli_has_seq_arg, formatted_seq_path, label):
     return formatted_seq_path
 
 
+def _resolve_runtime_seq_path(
+    cli_input_path,
+    formatted_seq_path,
+    label,
+    *,
+    allow_original_fallback=False,
+):
+    cli_has_seq_arg = _has_cli_sequence_arg(cli_input_path)
+    resolved = _resolve_nonempty_seq_path(cli_has_seq_arg, formatted_seq_path, label)
+    if resolved is not None:
+        return resolved
+
+    if not (allow_original_fallback and cli_has_seq_arg):
+        return None
+
+    original_path = abspath(cli_input_path)
+    if not os.path.exists(original_path):
+        print(f"# {label} original sequence file not found at {original_path}, skip {label}")
+        return None
+
+    print(
+        f"# {label} formatted sequence file is unavailable at {formatted_seq_path}, "
+        f"fall back to original input {original_path}"
+    )
+    return original_path
+
+
+def _resolve_runtime_map_path(args, temp_dir):
+    formatted_map_path = pjoin(temp_dir, "format_map.mrc")
+    if os.path.exists(formatted_map_path):
+        return formatted_map_path
+
+    if args.skip_preprocess:
+        raise FileNotFoundError(
+            "Cannot find preprocessed map at {} while --skip-preprocess is enabled. "
+            "Run without --skip-preprocess, or reuse a workspace that already contains format_map.mrc.".format(
+                formatted_map_path
+            )
+        )
+
+    raise FileNotFoundError(
+        "Cannot find preprocessed map at {} after preprocess.".format(formatted_map_path)
+    )
+
+
 def _load_esm_model(device, lm_weights_dir=None):
     import torch
     import esm
@@ -556,6 +607,7 @@ def _build_na_lm(
     return output_path
 
 def main(args):
+    build_started_at = time.time()
     script_dir = os.path.dirname(__file__)
     inferlm_v3x_model_config = pjoin(script_dir, "infer", "config", "model_v3x.yaml")
     weights_root_dir = _resolve_pred_weights_dir(args.pred_weights_dir, script_dir)
@@ -580,7 +632,7 @@ def main(args):
 
     active_stages = _collect_build_stage_order(template_chain_paths)
 
-    progress("EM3DFold build")
+    progress(f"EM3DFold begin at {_format_wall_time(build_started_at)}")
     progress(f"Output: {out_dir}")
     progress(f"Temp dir: {temp_dir}")
     runtime_log_path = get_runtime_log_path()
@@ -617,21 +669,26 @@ def main(args):
     else:
         _finish_build_stage(skipped=True)
 
+    runtime_map_path = _resolve_runtime_map_path(args, temp_dir)
 
-    protein_seq_path = _resolve_nonempty_seq_path(
-        has_protein_arg,
+
+    protein_seq_path = _resolve_runtime_seq_path(
+        args.protein,
         pjoin(temp_dir, "format_seq_protein.fasta"),
         "Protein",
+        allow_original_fallback=bool(args.skip_preprocess),
     )
-    rna_seq_path = _resolve_nonempty_seq_path(
-        has_rna_arg,
+    rna_seq_path = _resolve_runtime_seq_path(
+        args.rna,
         pjoin(temp_dir, "format_seq_rna.fasta"),
         "RNA",
+        allow_original_fallback=bool(args.skip_preprocess),
     )
-    dna_seq_path = _resolve_nonempty_seq_path(
-        has_dna_arg,
+    dna_seq_path = _resolve_runtime_seq_path(
+        args.dna,
         pjoin(temp_dir, "format_seq_dna.fasta"),
         "DNA",
+        allow_original_fallback=bool(args.skip_preprocess),
     )
     run_protein_input = protein_seq_path is not None
     run_nucleic_input = (rna_seq_path is not None) or (dna_seq_path is not None)
@@ -647,7 +704,7 @@ def main(args):
         from em3dfold.pipeline import pred
 
         pred_args = argparse.Namespace()
-        pred_args.input = pjoin(temp_dir, "format_map.mrc")
+        pred_args.input = runtime_map_path
         pred_args.output = pjoin(temp_dir, "pred")
         pred_args.contour = 1e-6
         pred_args.batchsize = 40
@@ -782,7 +839,7 @@ def main(args):
             start = time.time()
             from em3dfold.infer import inferlm_v3x
             inferlm_args = argparse.Namespace()
-            inferlm_args.map = pjoin(temp_dir, "format_map.mrc")
+            inferlm_args.map = runtime_map_path
             inferlm_args.polymer = initial_polymer_path
             inferlm_args.model_dir = all_atom_weights_dir
             inferlm_args.device = args.device
@@ -1059,10 +1116,12 @@ def main(args):
         progress("Final model: {}".format(fo))
         if os.path.exists(fo_entropy):
             progress("Residue-type confidence file: {}".format(fo_entropy))
+        progress(f"EM3DFold end at {_format_wall_time()}")
     else:
         progress("")
         progress("EM3DFold did not produce a final model.")
         progress("Please check run.log for the stage that failed.")
+        progress(f"EM3DFold end at {_format_wall_time()}")
 
 
 if __name__ == '__main__':

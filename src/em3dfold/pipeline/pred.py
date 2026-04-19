@@ -20,7 +20,7 @@ from em3dfold.utils.cryo_utils import (
     get_batch_from_generator,
     map_batch_to_map,
 )
-from em3dfold.utils.log_utils import progress, progress_substage
+from em3dfold.utils.log_utils import progress_substage
 from em3dfold.utils.misc_utils import pjoin, abspath
 from em3dfold.utils.torch_utils import clear_cuda_cache
 
@@ -305,7 +305,6 @@ def main(args):
 
     print(f"# Making directory {dir_out}", flush=True)
     os.makedirs(dir_out, exist_ok=True)
-    progress(f"Write logs and outputs to {dir_out}", logger_name=PROGRESS_LOGGER_NAME)
 
     if isinstance(args.stride, int):
         assert 12 <= args.stride <= 48, f"Invalid stride = {args.stride} -> 12 <= stride <= 48"
@@ -317,7 +316,7 @@ def main(args):
     devices = get_device_names(args.device)
     device = devices[0]
 
-    progress_substage("Stage-1 segmentation", logger_name=PROGRESS_LOGGER_NAME)
+    progress_substage("1 segmentation", logger_name=PROGRESS_LOGGER_NAME)
     inference_segmentation(
         dir_map=dir_map,
         contour=contour,
@@ -327,10 +326,11 @@ def main(args):
         test_params=test_params,
         device=device,
     )
-    progress("Done segmentation", logger_name=PROGRESS_LOGGER_NAME)
+
+    if args.protein or args.nucleic:
+        progress_substage("2 atom pos and aa type prediction", logger_name=PROGRESS_LOGGER_NAME)
 
     if args.protein:
-        progress_substage("Protein CA prediction", logger_name=PROGRESS_LOGGER_NAME)
         inference_protein_ca(
             dir_map=pjoin(dir_out, "prot.mrc"),
             contour=contour,
@@ -340,10 +340,8 @@ def main(args):
             test_params=test_params,
             device=device,
         )
-        progress("Done protein CA prediction", logger_name=PROGRESS_LOGGER_NAME)
 
     if args.nucleic:
-        progress_substage("Nucleic C4' prediction", logger_name=PROGRESS_LOGGER_NAME)
         inference_nucleic_c4(
             dir_map=pjoin(dir_out, "na.mrc"),
             contour=contour,
@@ -353,9 +351,7 @@ def main(args):
             test_params=test_params,
             device=device,
         )
-        progress("Done nucleic C4' prediction", logger_name=PROGRESS_LOGGER_NAME)
 
-        progress_substage("Nucleic AA prediction", logger_name=PROGRESS_LOGGER_NAME)
         inference_nucleic_aa(
             dir_map=pjoin(dir_out, "na.mrc"),
             dir_model=pjoin(dir_model, "na", "model_na_aa"),
@@ -364,13 +360,11 @@ def main(args):
             test_params=test_params,
             device=device,
         )
-        progress("Done nucleic AA prediction", logger_name=PROGRESS_LOGGER_NAME)
 
     clear_cuda_cache(device, note="pred")
 
     end = time.time()
     print(f"# Time consuming {end - start:.4f}", flush=True)
-    progress(f"Prediction completed in {end - start:.2f}s", logger_name=PROGRESS_LOGGER_NAME)
 
 
 def add_args(parser):
