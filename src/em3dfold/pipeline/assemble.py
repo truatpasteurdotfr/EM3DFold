@@ -12,6 +12,7 @@ import argparse
 import json
 import os
 import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -25,10 +26,12 @@ from em3dfold.utils.clash_utils import get_clash
 from em3dfold.utils.cryo_utils import read_map
 from em3dfold.utils.log_utils import progress, progress_stage
 from em3dfold.utils.misc_utils import abspath, pjoin
+from em3dfold.utils.torch_utils import seed_everything
 
 
 SCORE_SCALE = 100
 PROGRESS_LOGGER_NAME = "em3dfold.assemble.progress"
+DEFAULT_RANDOM_SEED = 42
 
 
 @dataclass(slots=True)
@@ -451,7 +454,7 @@ def _solve_max_weight_independent_set(scores, clash_matrix, time_limit, num_work
     solver1 = cp_model.CpSolver()
     solver1.parameters.max_time_in_seconds = float(time_limit)
     solver1.parameters.num_search_workers = int(num_workers)
-    solver1.parameters.random_seed = 0
+    solver1.parameters.random_seed = DEFAULT_RANDOM_SEED
     solver1.parameters.log_search_progress = bool(log_search_progress)
     status1 = solver1.Solve(model1)
     if status1 not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
@@ -468,7 +471,7 @@ def _solve_max_weight_independent_set(scores, clash_matrix, time_limit, num_work
     solver2 = cp_model.CpSolver()
     solver2.parameters.max_time_in_seconds = float(time_limit)
     solver2.parameters.num_search_workers = int(num_workers)
-    solver2.parameters.random_seed = 0
+    solver2.parameters.random_seed = DEFAULT_RANDOM_SEED
     solver2.parameters.log_search_progress = False
     status2 = solver2.Solve(model2)
     if status2 not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
@@ -487,7 +490,7 @@ def _solve_max_weight_independent_set(scores, clash_matrix, time_limit, num_work
     solver3 = cp_model.CpSolver()
     solver3.parameters.max_time_in_seconds = float(time_limit)
     solver3.parameters.num_search_workers = int(num_workers)
-    solver3.parameters.random_seed = 0
+    solver3.parameters.random_seed = DEFAULT_RANDOM_SEED
     solver3.parameters.log_search_progress = False
     status3 = solver3.Solve(model3)
     if status3 not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
@@ -569,8 +572,11 @@ def run_chain_assemble(
     num_workers=8,
     log_search_progress=False,
 ):
+    seed_everything(DEFAULT_RANDOM_SEED)
+    total_start = time.perf_counter()
     output_dir, output_cif = _resolve_output_paths(output)
     progress_stage("Read input structures for assemble", logger_name=PROGRESS_LOGGER_NAME)
+    prepare_start = time.perf_counter()
     structure_paths = _resolve_structure_paths(structure_paths)
     chain_records = _load_chain_records(structure_paths)
     if no_split:
@@ -585,6 +591,7 @@ def run_chain_assemble(
 
     raw_map_data, origin, voxel_size = _read_ca_map(abspath(ca_map_path))
     map_data = _normalize_density_map(raw_map_data, percentile=map_percentile)
+    print(f"Timing: input preparation took {time.perf_counter() - prepare_start:.2f}s")
     progress_stage("Score chains against CA map", logger_name=PROGRESS_LOGGER_NAME)
     print(f"Read scoring map from {abspath(ca_map_path)}")
     print(f"Map voxel size = {[float(x) for x in voxel_size]}")
@@ -608,14 +615,19 @@ def run_chain_assemble(
     selected_score = 0.0
 
     if protein_records:
+        score_start = time.perf_counter()
         _score_protein_chains(protein_records, map_data, origin, voxel_size)
+        print(f"Timing: protein-chain map scoring took {time.perf_counter() - score_start:.2f}s")
         progress_stage("Solve non-clashing protein subset", logger_name=PROGRESS_LOGGER_NAME)
+        clash_start = time.perf_counter()
         clash_matrix, pair_summaries = _compute_clash_matrix(
             protein_records,
             clash_threshold=clash_threshold,
             clash_distance=clash_distance,
             clash_resolution=clash_resolution,
         )
+        print(f"Timing: protein-protein clash matrix took {time.perf_counter() - clash_start:.2f}s")
+        solve_start = time.perf_counter()
         selected_local_indices, selected_score, solver_status = _solve_max_weight_independent_set(
             [record.score if record.score is not None else 0.0 for record in protein_records],
             clash_matrix,
@@ -623,6 +635,7 @@ def run_chain_assemble(
             num_workers=num_workers,
             log_search_progress=log_search_progress,
         )
+        print(f"Timing: OR-Tools subset solve took {time.perf_counter() - solve_start:.2f}s")
         selected_local_index_set = set(selected_local_indices)
         for local_index, record in enumerate(protein_records):
             if local_index in selected_local_index_set:
@@ -683,6 +696,7 @@ def run_chain_assemble(
         json.dump(summary, handle, indent=2)
     print(f"Write assembly summary to {summary_path}")
     progress(f"Write assembly summary to {summary_path}", logger_name=PROGRESS_LOGGER_NAME)
+    print(f"Timing: assemble total took {time.perf_counter() - total_start:.2f}s")
     return summary
 
 

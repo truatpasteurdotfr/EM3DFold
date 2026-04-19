@@ -16,6 +16,10 @@ import numpy as np
 from em3dfold.io.pdbio import chains_atom_pos_to_pdb, read_pdb
 from em3dfold.pipeline.unidoc_domain import parse_unidoc_domains
 from em3dfold.utils.misc_utils import abspath, pjoin
+from em3dfold.utils.torch_utils import seed_everything
+
+
+DEFAULT_RANDOM_SEED = 42
 
 
 def _ensure_local_em3dfit_on_path():
@@ -454,6 +458,7 @@ def run_fit_pipeline(
     rigid_cutoff_score_late=-0.5,
     rigid_skip_short_residues=50,
 ):
+    seed_everything(DEFAULT_RANDOM_SEED)
     output_dir = abspath(output_dir)
     map_path = abspath(map_path)
     os.makedirs(output_dir, exist_ok=True)

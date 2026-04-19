@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import os
+import random
 from functools import partial
 from pathlib import Path
 
@@ -24,6 +26,19 @@ from em3dfit.utils import (
 LOG_STAGE = "Cli"
 log_message = partial(_base_log_message, stage=LOG_STAGE)
 stage_timer = partial(_base_stage_timer, stage=LOG_STAGE)
+DEFAULT_RANDOM_SEED = 42
+
+
+def _seed_everything(seed: int = DEFAULT_RANDOM_SEED) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -102,6 +117,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    _seed_everything(DEFAULT_RANDOM_SEED)
     configure_runtime_logging(
         Path(args.output_pdb).expanduser().resolve().parent,
         package_prefixes=("em3dfit",),

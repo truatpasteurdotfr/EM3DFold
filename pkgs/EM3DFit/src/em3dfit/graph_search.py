@@ -18,6 +18,7 @@ log_message = partial(_base_log_message, stage=LOG_STAGE)
 stage_timer = partial(_base_stage_timer, stage=LOG_STAGE)
 
 GRAPH_OBJECTIVE_SCALE = 100
+DEFAULT_RANDOM_SEED = 42
 
 
 @dataclass(slots=True)
@@ -203,7 +204,7 @@ def solve_cp_sat_clique(
     )
     primary_solver = cp_model.CpSolver()
     primary_solver.parameters.num_search_workers = 8
-    primary_solver.parameters.random_seed = 0
+    primary_solver.parameters.random_seed = DEFAULT_RANDOM_SEED
     primary_solver.parameters.log_search_progress = False
     primary_status = primary_solver.Solve(primary_model)
     if primary_status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
@@ -219,7 +220,7 @@ def solve_cp_sat_clique(
     )
     secondary_solver = cp_model.CpSolver()
     secondary_solver.parameters.num_search_workers = 8
-    secondary_solver.parameters.random_seed = 0
+    secondary_solver.parameters.random_seed = DEFAULT_RANDOM_SEED
     secondary_solver.parameters.log_search_progress = False
     secondary_status = secondary_solver.Solve(secondary_model)
     if secondary_status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
@@ -237,7 +238,7 @@ def solve_cp_sat_clique(
     )
     tertiary_solver = cp_model.CpSolver()
     tertiary_solver.parameters.num_search_workers = 8
-    tertiary_solver.parameters.random_seed = 0
+    tertiary_solver.parameters.random_seed = DEFAULT_RANDOM_SEED
     tertiary_solver.parameters.log_search_progress = False
     tertiary_status = tertiary_solver.Solve(tertiary_model)
     if tertiary_status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
