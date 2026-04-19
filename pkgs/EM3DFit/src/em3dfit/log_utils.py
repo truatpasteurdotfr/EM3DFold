@@ -24,13 +24,13 @@ logging.Logger.progress = _progress
 
 
 class _AllowPackageLogsFilter(logging.Filter):
-    def __init__(self, package_prefixes: Iterable[str], progress_logger_name: str):
+    def __init__(self, package_prefixes: Iterable[str], exact_logger_names: Iterable[str] = ()):
         super().__init__()
         self.package_prefixes = tuple(package_prefixes)
-        self.progress_logger_name = progress_logger_name
+        self.exact_logger_names = tuple(name for name in exact_logger_names if name)
 
     def filter(self, record: logging.LogRecord) -> bool:
-        if record.name == self.progress_logger_name:
+        if record.name in self.exact_logger_names:
             return True
         return any(record.name.startswith(prefix) for prefix in self.package_prefixes)
 
@@ -258,7 +258,12 @@ def configure_runtime_logging(
 
         file_handler = logging.FileHandler(log_path, encoding="utf-8")
         file_handler.setLevel(logging.DEBUG)
-        file_handler.addFilter(_AllowPackageLogsFilter(package_prefixes, progress_logger_name))
+        file_handler.addFilter(
+            _AllowPackageLogsFilter(
+                package_prefixes,
+                exact_logger_names=(progress_logger_name, stdout_progress_logger_name),
+            )
+        )
         file_handler.setFormatter(
             logging.Formatter("%(asctime)s %(levelname)s %(name)s:%(lineno)d %(message)s")
         )
@@ -266,7 +271,12 @@ def configure_runtime_logging(
         stdout_handler = logging.StreamHandler(sys.stdout)
         if verbose:
             stdout_handler.setLevel(logging.DEBUG)
-            stdout_handler.addFilter(_AllowPackageLogsFilter(package_prefixes, progress_logger_name))
+            stdout_handler.addFilter(
+                _AllowPackageLogsFilter(
+                    package_prefixes,
+                    exact_logger_names=(progress_logger_name, stdout_progress_logger_name),
+                )
+            )
             stdout_handler.setFormatter(
                 logging.Formatter("%(asctime)s %(levelname)s %(name)s:%(lineno)d %(message)s")
             )
