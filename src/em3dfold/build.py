@@ -1,4 +1,5 @@
 """Main program"""
+import builtins
 import os
 import sys
 import time
@@ -18,6 +19,17 @@ from em3dfold.utils.misc_utils import pjoin, abspath
 from em3dfold.utils.torch_utils import clear_cuda_cache
 
 EM_WEIGHTS_ENV_VAR = "EM_WEIGHTS_DIR"
+LOG_PREFIX = "[em3dfold.build]"
+
+
+def print(*args, **kwargs):
+    sep = kwargs.get("sep", " ")
+    message = sep.join(str(arg) for arg in args)
+    if message.startswith("# "):
+        message = message[2:]
+    elif message.startswith("#"):
+        message = message[1:].lstrip()
+    builtins.print(f"{LOG_PREFIX} {message}", **kwargs)
 
 
 def add_args(parser):

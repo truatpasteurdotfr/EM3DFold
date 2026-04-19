@@ -50,6 +50,11 @@ If you are familiar with conda/pip/shell or you encounter problems when running 
 > [!NOTE]
 > If the script fails at some steps, please run the steps manually.
 
+For development installs inside this monorepo, install both packages in editable mode:
+```bash
+pip install -e ./pkgs/EM3DFit -e .
+```
+
 #### 3. Download pretrained weights
 
 The provided `download.sh` scripts automatically downloads the pretrained weights of EM3DFold and needed language models into specified directory:

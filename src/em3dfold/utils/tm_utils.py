@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import stat
 import subprocess
 import sys
 import tempfile
@@ -55,8 +56,23 @@ def extract_alignment_lines(lines):
     return align_lines
 
 
+def _ensure_executable_permission(path):
+    if os.name == "nt":
+        return path
+    if not os.path.isfile(path):
+        return path
+    if os.access(path, os.X_OK):
+        return path
+
+    print(f"# USalign exists but is not executable, add execute permission: {path}")
+    current_mode = os.stat(path).st_mode
+    new_mode = current_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+    os.chmod(path, new_mode)
+    return path
+
+
 def resolve_usalign_executable(lib_dir="./"):
-    lib_dir = os.path.abspath(lib_dir)
+    lib_dir = os.path.abspath(str(lib_dir).strip())
     candidates = []
     if os.name == "nt":
         candidates.extend(
@@ -77,8 +93,8 @@ def resolve_usalign_executable(lib_dir="./"):
 
     for candidate in candidates:
         if os.path.isfile(candidate):
-            return candidate
-    return candidates[0]
+            return _ensure_executable_permission(candidate)
+    return _ensure_executable_permission(candidates[0])
 
 
 def _build_windows_usalign_env():
