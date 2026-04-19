@@ -219,6 +219,7 @@ def configure_runtime_logging(
     *,
     package_prefixes: Iterable[str],
     progress_logger_name: str,
+    verbose: bool = False,
     excluded_prefixes: Iterable[str] = (),
     helper_modules: Iterable[str] = (),
 ) -> Path:
@@ -250,9 +251,16 @@ def configure_runtime_logging(
         )
 
         stdout_handler = logging.StreamHandler(sys.stdout)
-        stdout_handler.setLevel(PROGRESS_LEVEL)
-        stdout_handler.addFilter(_ExactLevelFilter(PROGRESS_LEVEL))
-        stdout_handler.setFormatter(logging.Formatter("%(message)s"))
+        if verbose:
+            stdout_handler.setLevel(logging.DEBUG)
+            stdout_handler.addFilter(_AllowPackageLogsFilter(package_prefixes, progress_logger_name))
+            stdout_handler.setFormatter(
+                logging.Formatter("%(asctime)s %(levelname)s %(name)s:%(lineno)d %(message)s")
+            )
+        else:
+            stdout_handler.setLevel(PROGRESS_LEVEL)
+            stdout_handler.addFilter(_ExactLevelFilter(PROGRESS_LEVEL))
+            stdout_handler.setFormatter(logging.Formatter("%(message)s"))
 
         root_logger.addHandler(file_handler)
         root_logger.addHandler(stdout_handler)
@@ -276,3 +284,7 @@ def progress(message: str, *, logger_name: str | None = None) -> None:
     logger = logging.getLogger(logger_name or state["progress_logger_name"])
     logger.progress(normalize_log_message(message))
     flush_stdio()
+
+
+def progress_stage(message: str, *, logger_name: str | None = None) -> None:
+    progress(f"----- Stage: {normalize_log_message(message)} -----", logger_name=logger_name)

@@ -14,7 +14,7 @@ from em3dfit.mrc import normalize_mrc, read_mrc, write_mrc
 from em3dfit.pdbio import read_pdb, write_fitted_pdb, write_mcp_pdb, write_scored_pdb
 from em3dfit.rigid import build_initial_ldp_search_grid, build_initial_ldp_search_grid_ftmatch
 from em3dfit.score import score_chain_against_ldps
-from em3dfit.log_utils import configure_runtime_logging, progress
+from em3dfit.log_utils import configure_runtime_logging, progress, progress_stage
 from em3dfit.utils import (
     log_message as _base_log_message,
     normalize_device_spec,
@@ -91,6 +91,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--refine-method", choices=["Powell", "Nelder-Mead"], default="Powell")
     parser.add_argument("--write-search-grid-mrc")
     parser.add_argument("--write-search-grid-mrc-ftmatch")
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Also write full detailed logs to stdout; otherwise stdout shows only key stage messages.",
+    )
     return parser
 
 
@@ -101,6 +106,7 @@ def main(argv: list[str] | None = None) -> int:
         Path(args.output_pdb).expanduser().resolve().parent,
         package_prefixes=("em3dfit",),
         progress_logger_name="em3dfit.progress",
+        verbose=bool(args.verbose),
         helper_modules=("em3dfit.log_utils", "em3dfit.utils"),
     )
     device = normalize_device_spec(args.device)
@@ -152,7 +158,7 @@ def main(argv: list[str] | None = None) -> int:
         search_grid_ftmatch_output_path=args.write_search_grid_mrc_ftmatch,
     )
 
-    progress("Read density map")
+    progress_stage("Read density map")
     log_message(f"reading map {args.main_chain_map}")
     with stage_timer("read mrc"):
         raw_map = read_mrc(args.main_chain_map)
@@ -174,7 +180,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         params.threshold = adaptive
 
-    progress("Read input structure")
+    progress_stage("Read input structure")
     log_message(f"reading pdb {args.input_pdb}")
     with stage_timer("read pdb"):
         model = read_pdb(args.input_pdb)
@@ -193,7 +199,7 @@ def main(argv: list[str] | None = None) -> int:
         f"max_graph_vertices={params.max_graph_vertices}"
     )
 
-    progress("Extract LDPs")
+    progress_stage("Extract LDPs")
     log_message("extracting MCP/LDP points")
     with stage_timer("extract ldps"):
         ldps, ldps_dens, _membership = extract_ldps(norm_map, params)
@@ -217,14 +223,14 @@ def main(argv: list[str] | None = None) -> int:
 
     output_path = Path(args.output_pdb)
     if args.mcp:
-        progress("Write MCP structure")
+        progress_stage("Write MCP structure")
         with stage_timer("write mcp pdb"):
             write_mcp_pdb(output_path, ldps, ldps_dens)
         log_message(f"write MCP structure to {output_path}")
         return 0
 
     if args.score:
-        progress("Score chains")
+        progress_stage("Score chains")
         with stage_timer("score chains"):
             for chain in model.chains:
                 chain.solutions = np.zeros((chain.n_segments, 6), dtype=np.float32)
@@ -234,7 +240,7 @@ def main(argv: list[str] | None = None) -> int:
         log_message(f"write scored structure to {output_path}")
         return 0
 
-    progress("Run EM3DFit assembly")
+    progress_stage("Run EM3DFit assembly")
     log_message("running rigid/flexible assembly")
     with stage_timer("assemble chains"):
         pose_sets = assemble_chains(model.chains, ldps, ldps_dens, params)

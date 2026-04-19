@@ -74,6 +74,11 @@ def main():
             description=(module.__doc__ if module is not None else f"Module {module_path} is currently unavailable."),
             formatter_class=argparse.RawTextHelpFormatter,
         )
+        module_parser.add_argument(
+            "--verbose",
+            action="store_true",
+            help="Also write full detailed logs to stdout; otherwise stdout shows only key stage messages.",
+        )
         if module is not None:
             if hasattr(module, "add_args"):
                 module.add_args(module_parser)
@@ -128,6 +133,7 @@ def main():
             runtime_log_dir,
             package_prefixes=("em3dfold", "em3dfit"),
             progress_logger_name="em3dfold.progress",
+            verbose=bool(getattr(args, "verbose", False)),
             excluded_prefixes=("em3dfold.rinalmo", "em3dfold.bin.src"),
             helper_modules=(
                 "em3dfold.utils.log_utils",

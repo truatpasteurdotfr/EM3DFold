@@ -14,7 +14,7 @@ from em3dfold.io.pdbio import (
     read_pdb,
 )
 from em3dfold.io.seqio import read_fasta
-from em3dfold.utils.log_utils import progress
+from em3dfold.utils.log_utils import progress, progress_stage
 from em3dfold.utils.misc_utils import pjoin, abspath
 from em3dfold.utils.torch_utils import clear_cuda_cache
 
@@ -532,7 +532,7 @@ def _build_na_lm(
     return output_path
 
 def main(args):
-    progress("Start modeling")
+    progress_stage("preprocess")
 
     script_dir = os.path.dirname(__file__)
     inferlm_v3x_model_config = pjoin(script_dir, "infer", "config", "model_v3x.yaml")
@@ -604,6 +604,7 @@ def main(args):
 
     # run segmentation
     if not args.skip_cx:
+        progress_stage("pred")
         run_nucleic = run_nucleic_input
         run_protein = run_protein_input
 
@@ -632,6 +633,7 @@ def main(args):
 
     # ms
     if not args.skip_denovo:
+        progress_stage("denovo")
         if not args.skip_map_to_p:
             ############
             # Handle C4'
@@ -698,7 +700,6 @@ def main(args):
             na_seq_embed_path = None
 
             if run_protein:
-                progress("Get protein LM embedding")
                 start = time.time()
                 prot_seq_embed_path = pjoin(denovo_dir, "prot_lm.npy")
                 _build_protein_lm(
@@ -715,7 +716,6 @@ def main(args):
                 progress("Skip protein LM embedding")
 
             if run_na:
-                progress("Get nucleic-acid LM embedding")
                 start = time.time()
                 na_seq_embed_path = pjoin(denovo_dir, "na_lm.npy")
                 _build_na_lm(
@@ -741,7 +741,6 @@ def main(args):
                 ],
             )
 
-            progress("Infer complex with a single inferlm_v3x run")
             start = time.time()
             from em3dfold.infer import inferlm_v3x
             inferlm_args = argparse.Namespace()
@@ -838,7 +837,7 @@ def main(args):
                     progress("No valid protein templates remain after filtering, skip template fix/imp")
                 else:
                     if not args.skip_fix:
-                        progress("Run template fix")
+                        progress_stage("fix")
                         start = time.time()
                         fix_output_dir = pjoin(temp_dir, "fix")
                         fix_args = argparse.Namespace(
@@ -857,7 +856,7 @@ def main(args):
                         progress("Skip template fix")
 
                     if not args.skip_imp:
-                        progress("Run template imp")
+                        progress_stage("imp")
                         start = time.time()
                         imp_output_dir = pjoin(temp_dir, "imp")
                         imp_args = argparse.Namespace(
@@ -886,7 +885,7 @@ def main(args):
         if fit_map_path is None or (not os.path.exists(fit_map_path)):
             raise FileNotFoundError("Cannot find a density map for template domain fitting.")
 
-        progress("Run protein-template rigid fitting")
+        progress_stage("fit")
         start = time.time()
         from em3dfold.template.pipeline import fit_pipeline as template_fit
 
@@ -942,7 +941,7 @@ def main(args):
     if template_chain_paths and (not args.skip_assemble):
         ca_map_path = _first_existing_path(pjoin(temp_dir, "pred", "ca.mrc"))
         if assemble_candidate_paths and ca_map_path is not None and os.path.exists(ca_map_path):
-            progress("Run assemble")
+            progress_stage("assemble")
             start = time.time()
             from em3dfold.pipeline import assemble as chain_assemble
 
