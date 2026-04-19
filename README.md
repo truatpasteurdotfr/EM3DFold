@@ -30,6 +30,13 @@ git clone https://github.com/huang-laboratory/EM3DFold.git
 cd EM3DFold
 ```
 
+> [!NOTE]
+> To get the latest version, use command:
+>```bash
+># In the EM3DFold directory
+>git pull
+>```
+
 If you do not use git, download the source archive via `wget` and extract it manually, e.g. with command:
 ```bash
 wget https://github.com/huang-laboratory/EM3DFold/archive/refs/heads/main.zip
@@ -41,41 +48,42 @@ cd EM3DFold-main
 
 We write the tedious installation steps into one script, so installation is one command like:
 ```bash
-# Make sure you are in the EM3DFold directory
+# In the EM3DFold directory and have conda
 bash scripts/install.sh
 ```
 
-If you are familiar with conda/pip/shell or you encounter problems when running the above command, please execute commands in `install.sh` step-by-step.
-
 > [!NOTE]
-> If the script fails at some steps, please run the steps manually.
+> If you are familiar with conda/pip/shell or you encounter problems when running the above command, please execute commands in `install.sh` step-by-step.
 
-For development installs inside this monorepo, install both packages in editable mode:
+<!--
+For development, you can install in editable mode:
 ```bash
 pip install -e ./pkgs/EM3DFit -e .
 ```
+!-->
 
 #### 3. Download pretrained weights
 
 The provided `download.sh` scripts automatically downloads the pretrained weights of EM3DFold and needed language models into specified directory:
 
 ```bash
-# Download all weights
-bash scripts/download.sh /path/to/weights/
+# Download all weights and set env var `EM_WEIGHTS_DIR`
+# Replace /path/to/save/pretrained/weights/ to the actual path
+bash scripts/download.sh /path/to/save/pretrained/weights/
 
-# After download weights, the conda env need to be refreshed
+# After downloading, the conda env needs to be refreshed
 conda deactivate
 conda activate em3dfold
 
-# Check the EM_WEIGHTS_DIR
+# Check if `EM_WEIGHTS_DIR` is successfully set
 echo $EM_WEIGHTS_DIR
 ```
 
 > [!NOTE]
-> If downloading fails, download the weights manually. 
-> If the script did not automatically write EM_WEIGHTS_DIR, please run it manually:
+> If downloading fails, download the weights manually. And if the script fails to set EM_WEIGHTS_DIR, please run it manually:
 > ```bash
-> conda env config vars set EM_WEIGHTS_DIR=/path/to/weights -n em3dfold
+> # In EM3DFold env
+> conda env config vars set EM_WEIGHTS_DIR=/path/to/save/pretrained/weights/ -n em3dfold
 >```
 
 ## Usage
@@ -98,9 +106,8 @@ EM_WEIGHTS_DIR=/path/to/weights em3dfold build --map ...
 - The cryo-EM density map and output directory are **required**.
 - Input FASTA files can each include multiple sequences.
 - You can provide only `--protein`, only `--rna`, only `--dna`, or any valid combination of them.
-- If you launch >1 modeling job, the output directory **must** be different for each run.
+- If you launch >1 modeling job, the output directory **MUST** be different for each run.
 - Input protein template(s) can either be a single chain PDB/mmCIF file or a multi-chain PDB/mmCIF file.
-- Template rigid fitting is handled by `src/em3dfold/pipeline/fit.py`; the legacy `src/em3dfold/template/pipeline/dock_pipeline.py` pipeline has been removed.
 - By default, intermediate results (predicted maps recycled structures) will be removed. Use `--keep-temp-files` if you want to keep them. 
 - Currently, only supports protein templates, nucleic-acids support depends on the community needs.
 
@@ -152,20 +159,27 @@ em3dfold build --map MAP.mrc \
 - **CUDA / PyTorch related errors**: check whether your installed `torch` matches the local CUDA runtime and GPU driver.
 
 ## Citation
-If you find EM3DFold useful in your work, please cite the corresponding papers.
+If you find EM3DFold useful, please cite the following papers.
 
 ```bibtex
 @article{EM3DFold,
   title={Highly accurate protein-nucleic acid modeling from cryo-EM maps with EM3DFold},
   author={Tao Li, Sheng-You Huang},
-  journal={bioRxiv},
+  journal={In submission},
   year={2026}
 }
 
 @article{EMProt,
-  title={EMProt improves protein structure determination from cryo-EM maps},
-  author={Tao Li, Ji Chen, Hao Li, Hong Cao and Sheng-You Huang},
-  journal={Nature Structural & Molecylar Biology},
+  title={EMProt improves structure determination from cryo-EM maps},
+  author={Tao Li, Ji Chen, Hao Li, Hong Cao & Sheng-You Huang},
+  journal={Nature Structural & Molecular Biology},
   year={2025}
+}
+
+@article{EM2NA,
+  title={Automated detection and de novo structure modeling of nucleic acids from cryo-EM maps},
+  author={Tao Li, Hong Cao, Jiahua He & Sheng-You Huang},
+  journal={Nature Communications},
+  year={2024}
 }
 ```
