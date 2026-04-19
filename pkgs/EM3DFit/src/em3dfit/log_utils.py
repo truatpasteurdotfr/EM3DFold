@@ -50,19 +50,16 @@ def _resolve_caller_module(state: dict[str, Any]) -> str | None:
     return None
 
 
-def _build_wrapper(state: dict[str, Any]):
-    def _wrapped_print(*args: Any, **kwargs: Any) -> None:
-        module_name = _resolve_caller_module(state)
-        if module_name is None:
-            state["original_print"](*args, **kwargs)
-            return
+def _wrapped_print(*args: Any, **kwargs: Any) -> None:
+    state = _get_state()
+    module_name = _resolve_caller_module(state)
+    if module_name is None:
+        state["original_print"](*args, **kwargs)
+        return
 
-        sep = kwargs.get("sep", " ")
-        message = sep.join(str(arg) for arg in args)
-        state["original_print"](format_log_message(module_name, message), **kwargs)
-
-    _wrapped_print.__em3d_original_print__ = state["original_print"]
-    return _wrapped_print
+    sep = kwargs.get("sep", " ")
+    message = sep.join(str(arg) for arg in args)
+    state["original_print"](format_log_message(module_name, message), **kwargs)
 
 
 def _get_state() -> dict[str, Any]:
@@ -76,7 +73,8 @@ def _get_state() -> dict[str, Any]:
             "helper_modules": set(),
             "lock": threading.RLock(),
         }
-        state["wrapper"] = _build_wrapper(state)
+        _wrapped_print.__em3d_original_print__ = original_print
+        state["wrapper"] = _wrapped_print
         setattr(builtins, _STATE_KEY, state)
     return state
 
