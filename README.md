@@ -31,14 +31,6 @@ Download EM3DFold via `git` (recommended):
 git clone https://github.com/huang-laboratory/EM3DFold.git
 cd EM3DFold
 ```
-
-> [!NOTE]
-> To get the latest version, use command:
->```bash
-># In the EM3DFold directory
->git pull
->```
-
 If you do not use git, download the source archive via `wget` and extract it manually, e.g. with command:
 ```bash
 wget https://github.com/huang-laboratory/EM3DFold/archive/refs/heads/main.zip
@@ -56,13 +48,6 @@ bash scripts/install.sh
 
 > [!NOTE]
 > If you are familiar with conda/pip/shell or you encounter problems when running the above command, you could run commands in `install.sh` step-by-step.
-
-<!--
-For development, you can install in editable mode:
-```bash
-pip install -e ./pkgs/EM3DFit -e .
-```
-!-->
 
 #### 3. Download pretrained weights
 
@@ -87,6 +72,17 @@ echo $EM_WEIGHTS_DIR
 > # In EM3DFold env
 > conda env config vars set EM_WEIGHTS_DIR=/path/to/save/pretrained/weights/ -n em3dfold
 >```
+
+## Update to latest version
+Run the following to install the latest version:
+```bash
+cd /path/to/EM3DFold/
+git pull
+conda activate em3dfold
+pip install .
+```
+
+If `env.yml` and pretrained weights changed, we will add more guidance here.
 
 ## Usage
 Running EM3DFold is straight forward with one command like
