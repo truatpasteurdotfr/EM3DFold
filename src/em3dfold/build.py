@@ -1000,13 +1000,11 @@ def main(args):
         if args.skip_fit:
             _finish_build_stage(skipped=True)
         else:
-            fit_map_path = _first_existing_path(
-                pjoin(temp_dir, "pred", "mc.mrc"),
-                pjoin(temp_dir, "format_map.mrc"),
-                args.map,
-            )
-            if fit_map_path is None or (not os.path.exists(fit_map_path)):
-                raise FileNotFoundError("Cannot find a density map for template domain fitting.")
+            fit_map_path = pjoin(temp_dir, "pred", "mc.mrc")
+            if not os.path.exists(fit_map_path):
+                raise FileNotFoundError(
+                    "Template fit requires temp/pred/mc.mrc, but it was not found."
+                )
 
             start = time.time()
             from em3dfold.template.pipeline import fit_pipeline as template_fit
