@@ -901,9 +901,9 @@ def main(args):
         shutil.copy(final_entropy, fo_denovo_entropy)
         fix_quotes(fo_denovo_entropy)
 
-    fix_output_dir = None
-    imp_output_dir = None
-    fit_output_dir = None
+    fix_output_dir = pjoin(temp_dir, "fix")
+    imp_output_dir = pjoin(temp_dir, "imp")
+    fit_output_dir = pjoin(temp_dir, "fit")
     fit_total_path = None
     template_candidate_paths = []
     denovo_protein_chain_paths = []
@@ -959,7 +959,6 @@ def main(args):
             _finish_build_stage(skipped=True)
         else:
             start = time.time()
-            fix_output_dir = pjoin(temp_dir, "fix")
             fix_args = argparse.Namespace(
                 seq=protein_seq_path,
                 chain=denovo_protein_chain_paths,
@@ -983,7 +982,6 @@ def main(args):
             _finish_build_stage(skipped=True)
         else:
             start = time.time()
-            imp_output_dir = pjoin(temp_dir, "imp")
             imp_args = argparse.Namespace(
                 seq=protein_seq_path,
                 chain=denovo_protein_chain_paths,
@@ -1013,7 +1011,6 @@ def main(args):
             start = time.time()
             from em3dfold.template.pipeline import fit_pipeline as template_fit
 
-            fit_output_dir = pjoin(temp_dir, "fit")
             fit_args = argparse.Namespace()
             fit_args.protein_template = template_chain_paths
             fit_args.map = fit_map_path
@@ -1041,18 +1038,21 @@ def main(args):
             print("# Time = {:.4f}".format(end - start))
             _finish_build_stage(start)
 
-    if imp_output_dir is not None:
-        imp_trimmed = pjoin(imp_output_dir, "imp_chains_trimmed.cif")
-        if os.path.exists(imp_trimmed):
-            template_candidate_paths.append(imp_trimmed)
-    if fix_output_dir is not None:
-        fix_chains = pjoin(fix_output_dir, "fix_chains_templs.cif")
-        if os.path.exists(fix_chains):
-            template_candidate_paths.append(fix_chains)
+    if fit_total_path is None:
+        fit_total_path = _first_existing_path(
+            pjoin(fit_output_dir, "fitted_total.cif"),
+        )
+
+    imp_trimmed = pjoin(imp_output_dir, "imp_chains_trimmed.cif")
+    if os.path.exists(imp_trimmed):
+        template_candidate_paths.append(imp_trimmed)
+    fix_chains = pjoin(fix_output_dir, "fix_chains_templs.cif")
+    if os.path.exists(fix_chains):
+        template_candidate_paths.append(fix_chains)
     if fit_total_path is not None and os.path.exists(fit_total_path):
         template_candidate_paths.append(fit_total_path)
 
-    assemble_output_dir = None
+    assemble_output_dir = pjoin(temp_dir, "assemble")
     assembled_output_path = None
     has_template_candidates = len(template_candidate_paths) > 0
     assemble_candidate_paths = list(template_candidate_paths)
@@ -1071,7 +1071,6 @@ def main(args):
                 start = time.time()
                 from em3dfold.pipeline import assemble as chain_assemble
 
-                assemble_output_dir = pjoin(temp_dir, "assemble")
                 assemble_args = argparse.Namespace(
                     structure_paths=assemble_candidate_paths,
                     ca_map_path=ca_map_path,
@@ -1096,13 +1095,18 @@ def main(args):
                 print("# Skip assemble: no structures are available")
                 _finish_build_stage(skipped=True)
 
+    if assembled_output_path is None:
+        assembled_output_path = _first_existing_path(
+            pjoin(assemble_output_dir, "assemble.cif"),
+        )
+
     final_output_path = None
     for candidate in [
         assembled_output_path,
         final_denovo,
         fit_total_path,
-        pjoin(imp_output_dir, "imp_chains_trimmed.cif") if imp_output_dir else None,
-        pjoin(fix_output_dir, "fix_chains_templs.cif") if fix_output_dir else None,
+        imp_trimmed,
+        fix_chains,
     ]:
         if candidate is not None and os.path.exists(candidate):
             final_output_path = candidate
