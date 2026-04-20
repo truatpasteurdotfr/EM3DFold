@@ -78,7 +78,7 @@ echo $EM_WEIGHTS_DIR
 >```
 
 ## Update to latest version
-Run the following to install the latest version:
+If you have already installed EM3DFold and want to get the latest version, run the following commands:
 ```bash
 cd /path/to/EM3DFold/
 git pull
@@ -110,7 +110,7 @@ EM_WEIGHTS_DIR=/path/to/weights em3dfold build --map ...
 - You can provide only `--protein`, only `--rna`, only `--dna`, or any valid combination of them.
 - If you launch >1 modeling job, the output directory **MUST** be different for each run.
 - Input protein template(s) may be provided as either single-chain or multi-chain PDB/mmCIF files.
-  > [!IMPORTANT]
+  > [!TIP]
   > The number of input template chains should match the number of target protein chains. If the target contains repeated identical chains, provide the corresponding template multiple times. For example, to pass 2 identical chains `0.pdb` and 2 non-identical chains `1.pdb` and `2.pdb`, use `--protein-template 0.pdb 0.pdb 1.pdb 2.pdb`.
 
 - By default, intermediate results (predicted maps recycled structures) will be removed. Use `--keep-temp-files` if you want to keep them. 
