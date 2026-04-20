@@ -6,7 +6,7 @@ EM3DFold is a software package for automatic protein, RNA, and DNA (and small mo
 EM3DFold is also a major upgrade of our previously developed [EMProt method](https://www.nature.com/articles/s41594-025-01723-1) with better running-speed, performance and stability.
 
 <p align="center">
-  <img src="assets/header.png" alt="EM3DFold header" width=480" />
+  <img src="assets/header.png" alt="EM3DFold header" width=720" />
 </p>
 
 ## Requirements
