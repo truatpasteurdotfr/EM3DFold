@@ -110,6 +110,7 @@ EM_WEIGHTS_DIR=/path/to/weights em3dfold build --map ...
 - Input protein template(s) can either be a single chain PDB/mmCIF file or a multi-chain PDB/mmCIF file.
 - By default, intermediate results (predicted maps recycled structures) will be removed. Use `--keep-temp-files` if you want to keep them. 
 - Currently, only supports protein templates, nucleic-acids support depends on the community needs.
+- GPU device control: `--device 0` means use cuda:0, when multiple GPU devices are specified like `--device 0 1 2`, only the first device will be used.
 
 Typical output directory layout:
 ```text
