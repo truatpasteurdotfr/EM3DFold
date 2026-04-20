@@ -168,9 +168,36 @@ def _get_protein_entity_ids(mmcif):
     return protein_entity_ids
 
 
+def _get_entity_chain_counts(mmcif):
+    entity_ids = _ensure_list(mmcif.get("_entity_poly.entity_id"))
+    strand_ids = _ensure_list(mmcif.get("_entity_poly.pdbx_strand_id"))
+
+    entity_to_chain_count = {}
+    row_count = max(len(entity_ids), len(strand_ids))
+    for idx in range(row_count):
+        entity_id = _normalize_token(entity_ids[idx] if idx < len(entity_ids) else None)
+        strand_id_text = _normalize_token(strand_ids[idx] if idx < len(strand_ids) else None)
+        if entity_id is None:
+            continue
+
+        if strand_id_text is None:
+            entity_to_chain_count.setdefault(entity_id, 0)
+            continue
+
+        chains = [
+            chain_id.strip()
+            for chain_id in strand_id_text.split(",")
+            if chain_id.strip() and chain_id.strip() not in {"?", "."}
+        ]
+        entity_to_chain_count[entity_id] = len(chains)
+
+    return entity_to_chain_count
+
+
 def extract_entity_uniprot_ids(cif_path):
     mmcif = _parse_mmcif_fields(cif_path)
     protein_entity_ids = _get_protein_entity_ids(mmcif)
+    entity_chain_counts = _get_entity_chain_counts(mmcif)
 
     entity_ids = _ensure_list(mmcif.get("_struct_ref.entity_id"))
     db_names = _ensure_list(mmcif.get("_struct_ref.db_name"))
@@ -199,11 +226,24 @@ def extract_entity_uniprot_ids(cif_path):
     rows = []
     for entity_id in sorted(protein_entity_ids, key=lambda value: (len(value), value)):
         uniprot_ids = entity_to_ids.get(entity_id, [])
+        chain_count = entity_chain_counts.get(entity_id, 0)
         if not uniprot_ids:
-            rows.append({"entity_id": entity_id, "uniprotkb_id": ""})
+            rows.append(
+                {
+                    "entity_id": entity_id,
+                    "chain_count": chain_count,
+                    "uniprotkb_id": "",
+                }
+            )
             continue
         for uniprot_id in uniprot_ids:
-            rows.append({"entity_id": entity_id, "uniprotkb_id": uniprot_id})
+            rows.append(
+                {
+                    "entity_id": entity_id,
+                    "chain_count": chain_count,
+                    "uniprotkb_id": uniprot_id,
+                }
+            )
     return rows
 
 
@@ -221,7 +261,7 @@ def main():
     rows = extract_entity_uniprot_ids(cif_path)
     writer = csv.DictWriter(
         __import__("sys").stdout,
-        fieldnames=["entity_id", "uniprotkb_id"],
+        fieldnames=["entity_id", "chain_count", "uniprotkb_id"],
         lineterminator="\n",
     )
     writer.writeheader()
