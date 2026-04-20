@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+from urllib.error import HTTPError, URLError
 
 from download_afdb import (
     AFDB_ENTRY_URL,
@@ -148,16 +149,22 @@ def main(argv: list[str] | None = None) -> int:
         chain_ids = entity_to_chains.get(entity_id, [])
         uniprot_ids = entity_to_uniprot.get(entity_id, [])
         if not chain_ids:
-            _stderr(f"Warning: entity {entity_id} has no chain IDs in {cif_path.name}, skip")
+            print(f"skip\tentity={entity_id}\treason=no_chain_ids")
             continue
         if not uniprot_ids:
-            _stderr(f"Warning: entity {entity_id} has no UniProt ID in {cif_path.name}, skip")
+            print(f"skip\tentity={entity_id}\treason=no_uniprot_id")
             continue
 
         uniprot_id = uniprot_ids[0]
         for chain_id in chain_ids:
             output_path = output_dir / f"{pdbid}.chain.{_sanitize_chain_id(chain_id)}.pdb"
-            _download_afdb_pdb(uniprot_id, output_path)
+            try:
+                _download_afdb_pdb(uniprot_id, output_path)
+            except (HTTPError, URLError, OSError, RuntimeError) as exc:
+                print(
+                    f"skip\tchain={chain_id}\tuniprot={uniprot_id}\treason=download_failed\tmessage={exc}"
+                )
+                continue
             print(f"{chain_id}\t{uniprot_id}\t{output_path}")
             downloaded += 1
 
