@@ -59,7 +59,7 @@ def _format_wall_time(timestamp=None):
 
 def add_args(parser):
     parser.add_argument("--map", "-m", help="Input map", required=True)
-    # Using --dna/--rna instead of a consensus --seq
+    # Using --protein/--dna/--rna instead of a consensus --seq
     parser.add_argument("--protein", "-p", help="Input protein sequence")
     parser.add_argument("--rna", "-r", help="Input rna sequence")
     parser.add_argument("--dna", "-d", help="Input dna sequence")
@@ -81,7 +81,7 @@ def add_args(parser):
         "--pred-weights-dir",
         "--weights-dir",
         dest="pred_weights_dir",
-        help="Optional shared root directory for pred.py and inferlm_v3x weights",
+        help="Optional shared root directory for weights",
     )
     parser.add_argument(
         "--temp-root",
@@ -93,8 +93,6 @@ def add_args(parser):
         help="Create the build temporary workspace with tempfile.mkdtemp instead of <output>/temp",
     )
     parser.add_argument("--keep-temp-files", action="store_true", help="Whether to keep temp files")
-    # Using GPU for faster getp
-    parser.add_argument("--gpu-getp", action="store_true", help="Using GPU to acclerate mean-shift for large maps")
     # Skipping controls
     skip_group = parser.add_argument_group("Skipping options")
     skip_group.add_argument("--skip-preprocess", action='store_true', help=argparse.SUPPRESS)
@@ -793,7 +791,7 @@ def main(args):
         run_na = run_nucleic_input and (not args.skip_infer_na)
 
         if args.skip_infer_na_aa:
-            print("# skip-infer-na-aa is ignored in unified inferlm_v3x mode")
+            print("# skip-infer-na-aa is ignore")
 
         if run_protein or run_na:
             denovo_dir = pjoin(temp_dir, "denovo")
@@ -892,11 +890,16 @@ def main(args):
         pjoin(temp_dir, "denovo", "output_entropy_score.cif"),
     )
     fo = pjoin(out_dir, "output.cif")
-    fo_entropy = pjoin(out_dir, "output_entropy_score.cif")
+    fo_denovo = pjoin(out_dir, "output_denovo.cif")
+    fo_denovo_entropy = pjoin(out_dir, "output_denovo_entropy_scores.cif")
+    fo_fit = pjoin(out_dir, "output_fit.cif")
 
+    if final_denovo is not None and os.path.exists(final_denovo):
+        shutil.copy(final_denovo, fo_denovo)
+        fix_quotes(fo_denovo)
     if final_entropy is not None and os.path.exists(final_entropy):
-        shutil.copy(final_entropy, fo_entropy)
-        fix_quotes(fo_entropy)
+        shutil.copy(final_entropy, fo_denovo_entropy)
+        fix_quotes(fo_denovo_entropy)
 
     fix_output_dir = None
     imp_output_dir = None
@@ -1110,6 +1113,9 @@ def main(args):
         shutil.copy(final_output_path, fo)
         fix_quotes(fo)
         has_output = True
+    if fit_total_path is not None and os.path.exists(fit_total_path):
+        shutil.copy(fit_total_path, fo_fit)
+        fix_quotes(fo_fit)
 
 
     # Remove temp files
@@ -1122,8 +1128,12 @@ def main(args):
         progress("Modeling complete. EM3DFold finished successfully.")
         progress("Thanks for waiting. Your model is ready.")
         progress("Final model: {}".format(fo))
-        if os.path.exists(fo_entropy):
-            progress("Residue-type confidence file: {}".format(fo_entropy))
+        # if os.path.exists(fo_denovo):
+        #     progress("De novo model: {}".format(fo_denovo))
+        # if os.path.exists(fo_denovo_entropy):
+        #     progress("De novo model with entropy scores: {}".format(fo_denovo_entropy))
+        # if os.path.exists(fo_fit):
+        #     progress("Template fit model: {}".format(fo_fit))
         progress(f"EM3DFold end at {_format_wall_time()}")
     else:
         progress("")

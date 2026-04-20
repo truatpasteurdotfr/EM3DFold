@@ -53,7 +53,7 @@ bash scripts/install.sh
 ```
 
 > [!NOTE]
-> If you are familiar with conda/pip/shell or you encounter problems when running the above command, please execute commands in `install.sh` step-by-step.
+> If you are familiar with conda/pip/shell or you encounter problems when running the above command, you could run commands in `install.sh` step-by-step.
 
 <!--
 For development, you can install in editable mode:
@@ -80,7 +80,7 @@ echo $EM_WEIGHTS_DIR
 ```
 
 > [!NOTE]
-> If downloading fails, download the weights manually. And if the script fails to set EM_WEIGHTS_DIR, please run it manually:
+> If downloading fails, download the weights manually. And if the script fails to set EM_WEIGHTS_DIR, run it manually:
 > ```bash
 > # In EM3DFold env
 > conda env config vars set EM_WEIGHTS_DIR=/path/to/save/pretrained/weights/ -n em3dfold
@@ -98,7 +98,7 @@ em3dfold build --map/-m MAP.mrc \
     --device 0
 ```
 
-To explicitly set the weights dir:
+To explicitly set the weights directory:
 ```bash
 EM_WEIGHTS_DIR=/path/to/weights em3dfold build --map ...
 ```
@@ -110,6 +110,24 @@ EM_WEIGHTS_DIR=/path/to/weights em3dfold build --map ...
 - Input protein template(s) can either be a single chain PDB/mmCIF file or a multi-chain PDB/mmCIF file.
 - By default, intermediate results (predicted maps recycled structures) will be removed. Use `--keep-temp-files` if you want to keep them. 
 - Currently, only supports protein templates, nucleic-acids support depends on the community needs.
+
+Typical output directory layout:
+```text
+OUTPUT_DIR/
+├── run.log
+├── output.cif
+├── output_denovo.cif
+├── output_denovo_entropy_scores.cif
+├── output_fit.cif
+└── temp/  # only kept with --keep-temp-files
+    ├── ...
+```
+
+- `run.log`: detailed running logs.
+- `output.cif`: final model selected by the full workflow. When no template is provided, it's equal to `output_denovo.cif`.
+- `output_denovo.cif`: de novo model.
+- `output_denovo_entropy_scores.cif`: de novo model with amino-acid entropy scores.
+- `output_fit.cif`: template fitting result if the fit stage is run successfully.
 
 **Check the command usage any time you forget how to run EM3DFold**
 ```bash
@@ -158,6 +176,15 @@ em3dfold build --map MAP.mrc \
 
 - **CUDA / PyTorch related errors**: check whether your installed `torch` matches the local CUDA runtime and GPU driver.
 
+- **GLIBCXX / CXXABI errors**: this usually means the runtime `libstdc++` in your current environment is older than the one required. A common fix is to add the EM3DFold conda environment `lib/` directory to `$LD_LIBRARY_PATH`:
+  ```bash
+  export LD_LIBRARY_PATH=/path/to/conda/env/em3dfold/lib:$LD_LIBRARY_PATH
+  ```
+  When the `em3dfold` environment is activated, you can find `/path/to/conda/env/em3dfold/` with:
+  ```bash
+  echo $CONDA_PREFIX
+  ```
+
 ## Citation
 If you find EM3DFold useful, please cite the following papers.
 
@@ -177,7 +204,7 @@ If you find EM3DFold useful, please cite the following papers.
 }
 
 @article{EM2NA,
-  title={Automated detection and de novo structure modeling of nucleic acids from cryo-EM maps},
+  #title={Automated detection and de novo structure modeling of nucleic acids from cryo-EM maps},
   author={Tao Li, Hong Cao, Jiahua He & Sheng-You Huang},
   journal={Nature Communications},
   year={2024}

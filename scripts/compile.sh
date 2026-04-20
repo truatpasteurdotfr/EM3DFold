@@ -47,33 +47,33 @@ copy_binary() {
     echo "Installed $(basename "$dst") -> $dst"
 }
 
-build_getp() {
-    echo "Compiling getp"
-    pushd "${SRC_DIR}/getp" >/dev/null
-    make clean || true
-    run_step "Failed to compile getp" make -j"${NPROC}" all
-    copy_binary "${SRC_DIR}/getp/getp" "${BIN_DIR}/getp"
-    popd >/dev/null
-}
+# build_getp() {
+#     echo "Compiling getp"
+#     pushd "${SRC_DIR}/getp" >/dev/null
+#     make clean || true
+#     run_step "Failed to compile getp" make -j"${NPROC}" all
+#     copy_binary "${SRC_DIR}/getp/getp" "${BIN_DIR}/getp"
+#     popd >/dev/null
+# }
 
-build_stride() {
-    echo "Compiling stride"
-    pushd "${SRC_DIR}/stride/src" >/dev/null
-    make clean || true
-    run_step "Failed to compile stride" make
-    copy_binary "${SRC_DIR}/stride/src/stride" "${BIN_DIR}/stride"
-    popd >/dev/null
-}
+# build_stride() {
+#     echo "Compiling stride"
+#     pushd "${SRC_DIR}/stride/src" >/dev/null
+#     make clean || true
+#     run_step "Failed to compile stride" make
+#     copy_binary "${SRC_DIR}/stride/src/stride" "${BIN_DIR}/stride"
+#     popd >/dev/null
+# }
 
-build_unidoc() {
-    echo "Compiling unidoc_frag"
-    pushd "${SRC_DIR}/unidoc/src" >/dev/null
-    rm -f unidoc_frag
-    run_step "Failed to compile unidoc_frag" \
-        g++ -std=c++0x -O2 -ffast-math -o unidoc_frag UniDoc_struct.cpp -lm
-    copy_binary "${SRC_DIR}/unidoc/src/unidoc_frag" "${BIN_DIR}/unidoc_frag"
-    popd >/dev/null
-}
+# build_unidoc() {
+#     echo "Compiling unidoc_frag"
+#     pushd "${SRC_DIR}/unidoc/src" >/dev/null
+#     rm -f unidoc_frag
+#     run_step "Failed to compile unidoc_frag" \
+#         g++ -std=c++0x -O2 -ffast-math -o unidoc_frag UniDoc_struct.cpp -lm
+#     copy_binary "${SRC_DIR}/unidoc/src/unidoc_frag" "${BIN_DIR}/unidoc_frag"
+#     popd >/dev/null
+# }
 
 build_usalign_suite() {
     echo "Compiling USalign"
@@ -92,17 +92,17 @@ main() {
 
     mkdir -p "${BIN_DIR}"
 
-    build_getp
-    build_stride
-    build_unidoc
+    # build_getp
+    # build_stride
+    # build_unidoc
     build_usalign_suite
 
     echo
     echo "EM3DFold binaries have been compiled successfully."
     echo "Installed programs:"
-    echo "  ${BIN_DIR}/getp"
-    echo "  ${BIN_DIR}/stride"
-    echo "  ${BIN_DIR}/unidoc_frag"
+    # echo "  ${BIN_DIR}/getp"
+    # echo "  ${BIN_DIR}/stride"
+    # echo "  ${BIN_DIR}/unidoc_frag"
     echo "  ${BIN_DIR}/USalign"
 }
 
