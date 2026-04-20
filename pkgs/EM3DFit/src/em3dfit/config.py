@@ -63,7 +63,7 @@ class Params:
     segment_link_weight: float = 8.0
     segment_link_tolerance: float = 1.5
     max_graph_vertices: int = 256
-    assembly_cycles: int = 4
+    assembly_cycles: int = 8
     ldp_prune_exponent: float = 2.0
     ldp_min_keep_ratio: float = 0.05
     backend: str = "auto"

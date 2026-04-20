@@ -3,6 +3,8 @@
 ## Overview
 EM3DFold is a software package for automatic protein, RNA, and DNA (and small molecules in the upcoming update) structure modeling from cryo-EM density maps.
 
+EM3DFold is also a major upgrade of our previously developed [EMProt method](https://www.nature.com/articles/s41594-025-01723-1) with better running-speed, performance and stability.
+
 ## Requirements
 **Platform**: Linux.
 
