@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "EM3D fitting utilities."
 readme = "README.md"
 requires-python = ">=3.10"
+license = {text = "Proprietary - All Rights Reserved"}
 dependencies = [
   "ortools",
   "scipy",
