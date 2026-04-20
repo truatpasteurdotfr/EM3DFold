@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import shutil
 import sys
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -145,6 +146,7 @@ def main(argv: list[str] | None = None) -> int:
     entity_to_uniprot = _entity_to_uniprot_ids(mmcif, protein_ids)
 
     downloaded = 0
+    downloaded_by_uniprot: dict[str, Path] = {}
     for entity_id in sorted(protein_ids, key=lambda value: (len(value), value)):
         chain_ids = entity_to_chains.get(entity_id, [])
         uniprot_ids = entity_to_uniprot.get(entity_id, [])
@@ -158,6 +160,20 @@ def main(argv: list[str] | None = None) -> int:
         uniprot_id = uniprot_ids[0]
         for chain_id in chain_ids:
             output_path = output_dir / f"{pdbid}.chain.{_sanitize_chain_id(chain_id)}.pdb"
+            cached_path = downloaded_by_uniprot.get(uniprot_id)
+            if cached_path is not None:
+                try:
+                    if cached_path.resolve() != output_path.resolve():
+                        shutil.copyfile(cached_path, output_path)
+                except OSError as exc:
+                    print(
+                        f"skip\tchain={chain_id}\tuniprot={uniprot_id}\treason=copy_failed\tmessage={exc}"
+                    )
+                    continue
+                print(f"{chain_id}\t{uniprot_id}\t{output_path}\t(copy)")
+                downloaded += 1
+                continue
+
             try:
                 _download_afdb_pdb(uniprot_id, output_path)
             except (HTTPError, URLError, OSError, RuntimeError) as exc:
@@ -165,7 +181,8 @@ def main(argv: list[str] | None = None) -> int:
                     f"skip\tchain={chain_id}\tuniprot={uniprot_id}\treason=download_failed\tmessage={exc}"
                 )
                 continue
-            print(f"{chain_id}\t{uniprot_id}\t{output_path}")
+            downloaded_by_uniprot[uniprot_id] = output_path
+            print(f"{chain_id}\t{uniprot_id}\t{output_path}\t(download)")
             downloaded += 1
 
     if downloaded == 0:
