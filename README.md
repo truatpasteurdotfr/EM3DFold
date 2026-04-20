@@ -107,7 +107,10 @@ EM_WEIGHTS_DIR=/path/to/weights em3dfold build --map ...
 - Input FASTA files can each include multiple sequences.
 - You can provide only `--protein`, only `--rna`, only `--dna`, or any valid combination of them.
 - If you launch >1 modeling job, the output directory **MUST** be different for each run.
-- Input protein template(s) can either be a single chain PDB/mmCIF file or a multi-chain PDB/mmCIF file.
+- Input protein template(s) may be provided as either single-chain or multi-chain PDB/mmCIF files.
+  > [!IMPORTANT]
+  > The number of input template chains should match the number of target protein chains. If the target contains repeated identical chains, provide the corresponding template multiple times. For example, to pass 2 identical chains `0.pdb` and 2 non-identical chains `1.pdb` and `2.pdb`, use `--protein-template 0.pdb 0.pdb 1.pdb 2.pdb`.
+
 - By default, intermediate results (predicted maps recycled structures) will be removed. Use `--keep-temp-files` if you want to keep them. 
 - Currently, only supports protein templates, nucleic-acids support depends on the community needs.
 - GPU device control: `--device 0` means use cuda:0, when multiple GPU devices are specified like `--device 0 1 2`, only the first device will be used.

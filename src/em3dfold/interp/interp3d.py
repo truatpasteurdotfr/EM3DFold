@@ -1,16 +1,11 @@
 import numpy as np
-from numba import jit, prange, get_num_threads, set_num_threads
+from numba import jit, prange
+
+from em3dfold.utils.numba_utils import configure_numba_threads
 
 
-NUMBA_INTERP_MAX_THREADS = 4
-
-
-def _configure_numba_interp_threads():
-    # Keep interpolation bounded so it does not oversubscribe the machine.
-    set_num_threads(min(NUMBA_INTERP_MAX_THREADS, get_num_threads()))
-
-
-_configure_numba_interp_threads()
+# Keep interpolation bounded so it does not oversubscribe the machine.
+configure_numba_threads()
 
 
 @jit(nopython=True)

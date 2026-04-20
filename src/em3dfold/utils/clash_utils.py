@@ -5,8 +5,13 @@ from __future__ import annotations
 from typing import Optional, Tuple
 
 import numpy as np
-from numba import njit
+from numba import njit, prange
 from scipy.spatial import KDTree
+
+from em3dfold.utils.numba_utils import configure_numba_threads
+
+
+configure_numba_threads()
 
 
 def clash_ratio(a, b, r_clash=1.8):
@@ -60,16 +65,15 @@ def clash_flag(a, b, r_clash=1.8):
     return ia, ib
 
 
-@njit
-def _get_clash_kernel(
+@njit(parallel=True)
+def _get_clash_directional_kernel(
     crda: np.ndarray,
     densa: np.ndarray,
     crdb: np.ndarray,
     densb: np.ndarray,
     resol: float = 5.0,
     clash_dist: float = 1.5,
-    compute_b_scores: bool = True,
-) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+) -> np.ndarray:
     pi = np.pi
     na = crda.shape[0]
     nb = crdb.shape[0]
@@ -82,35 +86,31 @@ def _get_clash_kernel(
     scoresa = np.zeros(na)
     mind2a = np.full(na, bw2)
 
-    if compute_b_scores:
-        scoresb = np.zeros(nb)
-        mind2b = np.full(nb, bw2)
-    else:
-        scoresb = None
-
-    for i in range(na):
+    for i in prange(na):
+        best_score = 0.0
+        best_d2 = bw2
         for j in range(nb):
             dens = densa[i] * densb[j]
-            ftmp = np.abs(crda[i] - crdb[j])
+            dx = abs(crda[i, 0] - crdb[j, 0])
+            dy = abs(crda[i, 1] - crdb[j, 1])
+            dz = abs(crda[i, 2] - crdb[j, 2])
 
-            if np.max(ftmp) > bw or np.sum(ftmp) > sqrt3bw:
+            max_delta = max(dx, dy, dz)
+            if max_delta > bw or (dx + dy + dz) > sqrt3bw:
                 continue
 
-            d2 = np.sum(ftmp ** 2)
+            d2 = dx * dx + dy * dy + dz * dz
             d2s = max(np.sqrt(d2) - clash_dist, 0.0) ** 2
 
-            if d2 < bw2:
+            if d2 < bw2 and d2 < best_d2:
                 prob = np.exp(-rsigma2 * d2s)
+                best_score = prob * dens
+                best_d2 = d2
 
-                if d2 < mind2a[i]:
-                    scoresa[i] = prob * dens
-                    mind2a[i] = d2
+        scoresa[i] = best_score
+        mind2a[i] = best_d2
 
-                if compute_b_scores and d2 < mind2b[j]:
-                    scoresb[j] = prob * dens
-                    mind2b[j] = d2
-
-    return scoresa, scoresb
+    return scoresa
 
 
 def get_clash(
@@ -127,7 +127,22 @@ def get_clash(
     assert len(crda) == len(densa), "crda and densa must have same length"
     assert len(crdb) == len(densb), "crdb and densb must have same length"
 
-    scoresa, scoresb = _get_clash_kernel(
-        crda, densa, crdb, densb, resol, clash_dist, return_b_scores
+    scoresa = _get_clash_directional_kernel(
+        crda,
+        densa,
+        crdb,
+        densb,
+        resol,
+        clash_dist,
     )
+    scoresb = None
+    if return_b_scores:
+        scoresb = _get_clash_directional_kernel(
+            crdb,
+            densb,
+            crda,
+            densa,
+            resol,
+            clash_dist,
+        )
     return (scoresa, scoresb) if return_b_scores else (scoresa, None)
