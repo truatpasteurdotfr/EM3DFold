@@ -162,7 +162,7 @@ def main(argv: list[str] | None = None) -> int:
 
     seq_to_members: dict[str, list[str]] = defaultdict(list)
     total_chain_count = 0
-    report_lines: list[str] = []
+    group_lines: list[str] = []
 
     pdbids: list[str] = []
     if args.list is not None:
@@ -181,7 +181,9 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit("--pdb must not be empty")
         pdbids.append(pdbid)
 
-    for pdbid in pdbids:
+    total_pdbids = len(pdbids)
+    for pdb_index, pdbid in enumerate(pdbids, start=1):
+        print(f"progress {pdb_index}/{total_pdbids} {pdbid}")
         cif_path = _find_structure_path(structure_dir, pdbid)
         chain_rows = _collect_chain_seqres(cif_path, pdbid)
         total_chain_count += len(chain_rows)
@@ -201,7 +203,7 @@ def main(argv: list[str] | None = None) -> int:
             duplicate_group_count += 1
         representative = members[0]
         for member in members:
-            report_lines.append(
+            line = (
                 "{:04d} {} {} {}".format(
                     group_index,
                     len(members),
@@ -209,11 +211,13 @@ def main(argv: list[str] | None = None) -> int:
                     member,
                 )
             )
+            group_lines.append(line)
+            print(line)
         fasta_name = f"{group_index:04d}"
         fasta_path = fasta_dir / f"{fasta_name}.fa"
         fasta_path.write_text(f">{fasta_name}\n{sequence}\n", encoding="utf-8")
 
-    report_lines.append(
+    print(
         "summary protein_chains={} unique_seqres={} duplicate_groups={} chains_saved={}".format(
             total_chain_count,
             unique_sequence_count,
@@ -221,11 +225,9 @@ def main(argv: list[str] | None = None) -> int:
             total_chain_count - unique_sequence_count,
         )
     )
-    report_lines.append(f"write {fasta_dir}")
-    report_lines.append(f"write {report_path}")
-    report_path.write_text("\n".join(report_lines) + "\n", encoding="utf-8")
-    for line in report_lines:
-        print(line)
+    report_path.write_text("\n".join(group_lines) + ("\n" if group_lines else ""), encoding="utf-8")
+    print(f"write {fasta_dir}")
+    print(f"write {report_path}")
     return 0
 
 
