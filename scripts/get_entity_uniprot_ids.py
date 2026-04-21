@@ -26,6 +26,9 @@ def _tokenize_mmcif(text):
 
         if line.startswith(";"):
             block_lines = []
+            opening_rest = line[1:]
+            if opening_rest:
+                block_lines.append(opening_rest)
             i += 1
             while i < len(lines) and not lines[i].startswith(";"):
                 block_lines.append(lines[i])
