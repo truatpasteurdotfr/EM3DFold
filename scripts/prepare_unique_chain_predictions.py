@@ -200,15 +200,16 @@ def main(argv: list[str] | None = None) -> int:
         representative = members[0]
         for member in members:
             print(
-                "group={:04d} tcount={} tlen={} {}".format(
+                "{:04d} {} {} {}".format(
                     group_index,
                     len(members),
                     len(sequence),
                     member,
                 )
             )
-        fasta_path = fasta_dir / f"{representative}.fa"
-        fasta_path.write_text(f">{representative}\n{sequence}\n", encoding="utf-8")
+        fasta_name = f"{group_index:04d}"
+        fasta_path = fasta_dir / f"{fasta_name}.fa"
+        fasta_path.write_text(f">{fasta_name}\n{sequence}\n", encoding="utf-8")
 
     print(
         "summary\tprotein_chains={}\tunique_seqres={}\tduplicate_groups={}\tchains_saved={}".format(
