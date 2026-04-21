@@ -158,9 +158,11 @@ def main(argv: list[str] | None = None) -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     fasta_dir = output_dir / "unique_protein_seqres"
     fasta_dir.mkdir(parents=True, exist_ok=True)
+    report_path = output_dir / "seqres_groups.txt"
 
     seq_to_members: dict[str, list[str]] = defaultdict(list)
     total_chain_count = 0
+    report_lines: list[str] = []
 
     pdbids: list[str] = []
     if args.list is not None:
@@ -199,7 +201,7 @@ def main(argv: list[str] | None = None) -> int:
             duplicate_group_count += 1
         representative = members[0]
         for member in members:
-            print(
+            report_lines.append(
                 "{:04d} {} {} {}".format(
                     group_index,
                     len(members),
@@ -211,15 +213,19 @@ def main(argv: list[str] | None = None) -> int:
         fasta_path = fasta_dir / f"{fasta_name}.fa"
         fasta_path.write_text(f">{fasta_name}\n{sequence}\n", encoding="utf-8")
 
-    print(
-        "summary\tprotein_chains={}\tunique_seqres={}\tduplicate_groups={}\tchains_saved={}".format(
+    report_lines.append(
+        "summary protein_chains={} unique_seqres={} duplicate_groups={} chains_saved={}".format(
             total_chain_count,
             unique_sequence_count,
             duplicate_group_count,
             total_chain_count - unique_sequence_count,
         )
     )
-    print(f"write\t{fasta_dir}")
+    report_lines.append(f"write {fasta_dir}")
+    report_lines.append(f"write {report_path}")
+    report_path.write_text("\n".join(report_lines) + "\n", encoding="utf-8")
+    for line in report_lines:
+        print(line)
     return 0
 
 
