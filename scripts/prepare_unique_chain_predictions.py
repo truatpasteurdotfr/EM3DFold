@@ -125,7 +125,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Read a list of PDB IDs and report which protein chains have identical SEQRES.",
     )
-    parser.add_argument("list", help="Text file; the first column is pdbid")
+    input_group = parser.add_mutually_exclusive_group(required=True)
+    input_group.add_argument(
+        "--list",
+        help="Text file; the first column is pdbid",
+    )
+    input_group.add_argument(
+        "--pdb",
+        help="Single pdbid to process",
+    )
     parser.add_argument(
         "--structure-dir",
         required=True,
@@ -142,12 +150,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_arg_parser().parse_args(argv)
-    list_path = Path(args.list).expanduser().resolve()
     structure_dir = Path(args.structure_dir).expanduser().resolve()
     output_dir = Path(args.output_dir).expanduser().resolve()
 
-    if not list_path.is_file():
-        raise FileNotFoundError(f"List file not found: {list_path}")
     if not structure_dir.is_dir():
         raise FileNotFoundError(f"Structure directory not found: {structure_dir}")
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -157,17 +162,29 @@ def main(argv: list[str] | None = None) -> int:
     seq_to_members: dict[str, list[str]] = defaultdict(list)
     total_chain_count = 0
 
-    with list_path.open("r", encoding="utf-8") as handle:
-        for raw_line in handle:
-            stripped = raw_line.strip()
-            if not stripped or stripped.startswith("#"):
-                continue
-            pdbid = stripped.split()[0]
-            cif_path = _find_structure_path(structure_dir, pdbid)
-            chain_rows = _collect_chain_seqres(cif_path, pdbid)
-            total_chain_count += len(chain_rows)
-            for chain_name, sequence in chain_rows:
-                seq_to_members[sequence].append(chain_name)
+    pdbids: list[str] = []
+    if args.list is not None:
+        list_path = Path(args.list).expanduser().resolve()
+        if not list_path.is_file():
+            raise FileNotFoundError(f"List file not found: {list_path}")
+        with list_path.open("r", encoding="utf-8") as handle:
+            for raw_line in handle:
+                stripped = raw_line.strip()
+                if not stripped or stripped.startswith("#"):
+                    continue
+                pdbids.append(stripped.split()[0])
+    else:
+        pdbid = str(args.pdb).strip()
+        if not pdbid:
+            raise SystemExit("--pdb must not be empty")
+        pdbids.append(pdbid)
+
+    for pdbid in pdbids:
+        cif_path = _find_structure_path(structure_dir, pdbid)
+        chain_rows = _collect_chain_seqres(cif_path, pdbid)
+        total_chain_count += len(chain_rows)
+        for chain_name, sequence in chain_rows:
+            seq_to_members[sequence].append(chain_name)
 
     duplicate_group_count = 0
     unique_sequence_count = len(seq_to_members)
