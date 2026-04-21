@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import sys
 from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 
@@ -100,25 +101,32 @@ def _entity_to_seqres(mmcif: dict, protein_ids: set[str]) -> dict[str, str]:
     return mapping
 
 
-def _collect_chain_seqres(cif_path: Path, pdbid: str) -> list[tuple[str, str]]:
+def _collect_chain_seqres(cif_path: Path, pdbid: str) -> tuple[list[tuple[str, str]], list[str]]:
     mmcif = _parse_mmcif_fields(cif_path)
     protein_ids = _protein_entity_ids(mmcif)
     entity_to_chains = _entity_to_chain_ids(mmcif, protein_ids)
     entity_to_seqres = _entity_to_seqres(mmcif, protein_ids)
 
     rows: list[tuple[str, str]] = []
+    messages: list[str] = []
     for entity_id in sorted(protein_ids, key=lambda value: (len(value), value)):
         sequence = entity_to_seqres.get(entity_id)
         chain_ids = entity_to_chains.get(entity_id, [])
         if sequence is None:
-            print(f"skip\t{pdbid}\tentity={entity_id}\treason=no_seqres")
+            messages.append(f"skip {pdbid} entity={entity_id} reason=no_seqres")
             continue
         if not chain_ids:
-            print(f"skip\t{pdbid}\tentity={entity_id}\treason=no_chain_ids")
+            messages.append(f"skip {pdbid} entity={entity_id} reason=no_chain_ids")
             continue
         for chain_id in chain_ids:
             rows.append((f"{pdbid}.chain.{chain_id}", sequence))
-    return rows
+    return rows, messages
+
+
+def _collect_chain_seqres_for_pdbid(pdbid: str, structure_dir: str) -> tuple[str, list[tuple[str, str]], list[str]]:
+    cif_path = _find_structure_path(Path(structure_dir), pdbid)
+    rows, messages = _collect_chain_seqres(cif_path, pdbid)
+    return pdbid, rows, messages
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -144,6 +152,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--output-dir",
         default="seqres_out",
         help="Directory to write deduplicated protein SEQRES fasta files",
+    )
+    parser.add_argument(
+        "--jobs",
+        type=int,
+        default=4,
+        help="Number of worker threads/processes used for reading mmCIF files",
+    )
+    parser.add_argument(
+        "--backend",
+        choices=("process", "thread"),
+        default="process",
+        help="Parallel backend used for reading mmCIF files",
     )
     return parser
 
@@ -182,13 +202,36 @@ def main(argv: list[str] | None = None) -> int:
         pdbids.append(pdbid)
 
     total_pdbids = len(pdbids)
-    for pdb_index, pdbid in enumerate(pdbids, start=1):
-        print(f"progress {pdb_index}/{total_pdbids} {pdbid}")
-        cif_path = _find_structure_path(structure_dir, pdbid)
-        chain_rows = _collect_chain_seqres(cif_path, pdbid)
-        total_chain_count += len(chain_rows)
-        for chain_name, sequence in chain_rows:
-            seq_to_members[sequence].append(chain_name)
+    jobs = max(1, int(args.jobs))
+    backend = args.backend
+
+    if jobs == 1 or total_pdbids <= 1:
+        for pdb_index, pdbid in enumerate(pdbids, start=1):
+            print(f"progress {pdb_index}/{total_pdbids} {pdbid}")
+            cif_path = _find_structure_path(structure_dir, pdbid)
+            chain_rows, messages = _collect_chain_seqres(cif_path, pdbid)
+            for message in messages:
+                print(message)
+            total_chain_count += len(chain_rows)
+            for chain_name, sequence in chain_rows:
+                seq_to_members[sequence].append(chain_name)
+    else:
+        executor_cls = ProcessPoolExecutor if backend == "process" else ThreadPoolExecutor
+        with executor_cls(max_workers=jobs) as executor:
+            futures = {
+                executor.submit(_collect_chain_seqres_for_pdbid, pdbid, str(structure_dir)): pdbid
+                for pdbid in pdbids
+            }
+            completed = 0
+            for future in as_completed(futures):
+                pdbid, chain_rows, messages = future.result()
+                completed += 1
+                print(f"progress {completed}/{total_pdbids} {pdbid}")
+                for message in messages:
+                    print(message)
+                total_chain_count += len(chain_rows)
+                for chain_name, sequence in chain_rows:
+                    seq_to_members[sequence].append(chain_name)
 
     duplicate_group_count = 0
     unique_sequence_count = len(seq_to_members)
