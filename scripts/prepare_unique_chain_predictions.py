@@ -194,21 +194,19 @@ def main(argv: list[str] | None = None) -> int:
             key=lambda item: (-len(item[1]), -len(item[0]), item[1][0]),
         ),
         start=1,
-        ):
-        if len(members) <= 1:
-            representative = members[0]
-        else:
+    ):
+        if len(members) > 1:
             duplicate_group_count += 1
-            representative = members[0]
-            for member in members:
-                print(
-                    "group={:04d} tcount={} tlen={} {}".format(
-                        group_index,
-                        len(members),
-                        len(sequence),
-                        member,
-                    )
+        representative = members[0]
+        for member in members:
+            print(
+                "group={:04d} tcount={} tlen={} {}".format(
+                    group_index,
+                    len(members),
+                    len(sequence),
+                    member,
                 )
+            )
         fasta_path = fasta_dir / f"{representative}.fa"
         fasta_path.write_text(f">{representative}\n{sequence}\n", encoding="utf-8")
 
