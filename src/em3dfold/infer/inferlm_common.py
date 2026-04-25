@@ -138,16 +138,26 @@ def prepare_common_args(parser):
     return parser
 
 
-def _polymer_to_chain_lists(polymer):
+def _polymer_to_chain_lists(polymer, residue_mask=None):
     chains_atom_pos = []
     chains_atom_mask = []
     chains_res_type = []
     chains_res_idx = []
     chains_bfactor = []
 
-    unique_chain_indices = np.unique(polymer.chain_index)
+    if residue_mask is None:
+        residue_mask = np.ones((len(polymer.aatype),), dtype=bool)
+    else:
+        residue_mask = np.asarray(residue_mask, dtype=bool)
+        if residue_mask.shape[0] != len(polymer.aatype):
+            raise ValueError("residue_mask length does not match polymer residue count")
+
+    if not np.any(residue_mask):
+        return chains_atom_pos, chains_atom_mask, chains_res_type, chains_res_idx, chains_bfactor
+
+    unique_chain_indices = np.unique(polymer.chain_index[residue_mask])
     for chain_idx in unique_chain_indices:
-        chain_mask = polymer.chain_index == chain_idx
+        chain_mask = (polymer.chain_index == chain_idx) & residue_mask
         chains_atom_pos.append(polymer.atomc_positions[chain_mask])
         chains_atom_mask.append(polymer.atomc_mask[chain_mask])
         chains_res_type.append(polymer.aatype[chain_mask])
@@ -181,6 +191,41 @@ def _polymer_atomc_bfactors(polymer, chain_mask):
     return atomc_bfactors
 
 
+def _extend_merged_chain_lists(
+    chains_atom_pos,
+    chains_atom_mask,
+    chains_res_type,
+    chains_res_idx,
+    chains_bfactor,
+    path,
+    residue_kind=None,
+):
+    if path is None or (not os.path.isfile(path)):
+        return
+
+    polymer = get_polymer_from_file_path(path)
+    residue_mask = None
+    if residue_kind == "protein":
+        residue_mask = np.asarray(polymer.prot_mask, dtype=bool)
+    elif residue_kind == "na":
+        residue_mask = ~np.asarray(polymer.prot_mask, dtype=bool)
+    elif residue_kind is not None:
+        raise ValueError(f"Unsupported residue kind: {residue_kind}")
+
+    (
+        part_atom_pos,
+        part_atom_mask,
+        part_res_type,
+        part_res_idx,
+        part_bfactor,
+    ) = _polymer_to_chain_lists(polymer, residue_mask=residue_mask)
+    chains_atom_pos.extend(part_atom_pos)
+    chains_atom_mask.extend(part_atom_mask)
+    chains_res_type.extend(part_res_type)
+    chains_res_idx.extend(part_res_idx)
+    chains_bfactor.extend(part_bfactor)
+
+
 def _write_merged_best_so_far_output(output_path, protein_path=None, na_path=None):
     chains_atom_pos = []
     chains_atom_mask = []
@@ -188,22 +233,24 @@ def _write_merged_best_so_far_output(output_path, protein_path=None, na_path=Non
     chains_res_idx = []
     chains_bfactor = []
 
-    for path in [protein_path, na_path]:
-        if path is None or (not os.path.isfile(path)):
-            continue
-        polymer = get_polymer_from_file_path(path)
-        (
-            part_atom_pos,
-            part_atom_mask,
-            part_res_type,
-            part_res_idx,
-            part_bfactor,
-        ) = _polymer_to_chain_lists(polymer)
-        chains_atom_pos.extend(part_atom_pos)
-        chains_atom_mask.extend(part_atom_mask)
-        chains_res_type.extend(part_res_type)
-        chains_res_idx.extend(part_res_idx)
-        chains_bfactor.extend(part_bfactor)
+    _extend_merged_chain_lists(
+        chains_atom_pos,
+        chains_atom_mask,
+        chains_res_type,
+        chains_res_idx,
+        chains_bfactor,
+        protein_path,
+        residue_kind="protein",
+    )
+    _extend_merged_chain_lists(
+        chains_atom_pos,
+        chains_atom_mask,
+        chains_res_type,
+        chains_res_idx,
+        chains_bfactor,
+        na_path,
+        residue_kind="na",
+    )
 
     if len(chains_atom_pos) == 0:
         return None
@@ -482,9 +529,13 @@ def run_main(args, model_class, model_args, run_inference_fn):
     output_dir = args.output_dir
     n_round_refine = max(args.recycle, 1)
     best_so_far_protein_path = None
+    best_so_far_protein_entropy_path = None
     best_so_far_protein_num_res = -1
+    last_protein_after_prune_path = None
+    last_protein_entropy_path = None
+    last_protein_after_num_res = -1
     last_na_after_prune_path = None
-    last_output_entropy_score_path = None
+    last_na_entropy_path = None
 
     for i in range(n_round_refine):
         args.no_use_random_affine = i != 0
@@ -508,6 +559,16 @@ def run_main(args, model_class, model_args, run_inference_fn):
 
         protein_after_path = output_info.get("protein_after_prune_path")
         protein_after_num_res = int(output_info.get("protein_after_num_res", 0) or 0)
+        entropy_output_path = output_info.get("output_entropy_score_path")
+        protein_entropy_output_path = (
+            entropy_output_path
+            if protein_after_num_res > 0 and entropy_output_path is not None and os.path.isfile(entropy_output_path)
+            else None
+        )
+        if protein_after_path is not None and protein_after_num_res > 0:
+            last_protein_after_prune_path = protein_after_path
+            last_protein_entropy_path = protein_entropy_output_path
+            last_protein_after_num_res = protein_after_num_res
         if i < 2 and protein_after_path is not None:
             print(
                 "# Skip best_so_far_protein update at recycle_{}; only consider rounds with index >= 2".format(
@@ -516,6 +577,7 @@ def run_main(args, model_class, model_args, run_inference_fn):
             )
         if i >= 2 and protein_after_path is not None and protein_after_num_res > best_so_far_protein_num_res:
             best_so_far_protein_path = protein_after_path
+            best_so_far_protein_entropy_path = protein_entropy_output_path
             best_so_far_protein_num_res = protein_after_num_res
             print(
                 "# Update best_so_far_protein: residues={} path={}".format(
@@ -530,9 +592,11 @@ def run_main(args, model_class, model_args, run_inference_fn):
             if na_after_num_res > 0
             else None
         )
-        entropy_output_path = output_info.get("output_entropy_score_path")
-        if entropy_output_path is not None and os.path.isfile(entropy_output_path):
-            last_output_entropy_score_path = entropy_output_path
+        last_na_entropy_path = (
+            entropy_output_path
+            if na_after_num_res > 0 and entropy_output_path is not None and os.path.isfile(entropy_output_path)
+            else None
+        )
         args.polymer = output_info.get("before_prune_path") or output_info.get("output_path")
         if (
             getattr(args, "pass_prev_aa_probs", True)
@@ -557,28 +621,50 @@ def run_main(args, model_class, model_args, run_inference_fn):
             )
         )
 
+    selected_protein_path = best_so_far_protein_path
+    selected_protein_entropy_path = best_so_far_protein_entropy_path
+    selected_protein_num_res = best_so_far_protein_num_res
+    if selected_protein_path is None and last_protein_after_prune_path is not None:
+        selected_protein_path = last_protein_after_prune_path
+        selected_protein_entropy_path = last_protein_entropy_path
+        selected_protein_num_res = last_protein_after_num_res
+        print(
+            "# Use fallback protein source from last recycle: residues={} path={}".format(
+                selected_protein_num_res,
+                selected_protein_path,
+            )
+        )
+
     final_output_path = os.path.join(output_dir, "output.cif")
     merged_output_path = _write_merged_best_so_far_output(
         final_output_path,
-        protein_path=best_so_far_protein_path,
+        protein_path=selected_protein_path,
         na_path=last_na_after_prune_path,
     )
     if merged_output_path is not None:
         print(f"# Final merged output written to {merged_output_path}")
-        if best_so_far_protein_path is not None:
+        if selected_protein_path is not None:
             print(
                 "# Final protein source = {} ({} residues)".format(
-                    best_so_far_protein_path,
-                    best_so_far_protein_num_res,
+                    selected_protein_path,
+                    selected_protein_num_res,
                 )
             )
         if last_na_after_prune_path is not None:
             print(f"# Final NA source = {last_na_after_prune_path}")
 
     final_entropy_output_path = os.path.join(output_dir, "output_entropy_score.cif")
-    if last_output_entropy_score_path is not None:
-        shutil.copy(last_output_entropy_score_path, final_entropy_output_path)
+    merged_entropy_output_path = _write_merged_best_so_far_output(
+        final_entropy_output_path,
+        protein_path=selected_protein_entropy_path,
+        na_path=last_na_entropy_path,
+    )
+    if merged_entropy_output_path is not None:
         print(f"# Final entropy-score output written to {final_entropy_output_path}")
+        if selected_protein_entropy_path is not None:
+            print(f"# Final entropy protein source = {selected_protein_entropy_path}")
+        if last_na_entropy_path is not None:
+            print(f"# Final entropy NA source = {last_na_entropy_path}")
 
     print("# Done all rounds")
 

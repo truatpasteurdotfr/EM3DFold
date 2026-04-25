@@ -173,7 +173,7 @@ em3dfold build --map MAP.mrc \
 ```bash
 em3dfold build --map MAP.mrc \ 
   --protein protein.fa \ 
-  --protein-template PROTEIN_TEMPLATE_0.cif [...] \
+  --protein-template protein_template_0.cif [...] \
   --output out_protein \ 
   --device 0
 ```
