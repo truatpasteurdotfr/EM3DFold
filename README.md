@@ -3,7 +3,7 @@
 ## Overview
 EM3DFold is a software package for automatic protein, RNA, and DNA (and small molecules in the upcoming update) structure modeling from cryo-EM density maps.
 
-EM3DFold is also a major upgrade of our previously developed [EMProt method](https://www.nature.com/articles/s41594-025-01723-1) with better running-speed, performance and stability.
+EM3DFold is also a major upgrade of our previously developed [EMProt method](https://www.nature.com/articles/s41594-025-01723-1) with faster running speed, better performance and stability.
 
 <p align="center">
   <img src="assets/header.png" alt="EM3DFold header" width=720" />
@@ -22,13 +22,13 @@ EM3DFold is also a major upgrade of our previously developed [EMProt method](htt
 **Disk Storage**: EM3DFold pretrained weights and language model weights require at least 6 GB free disk space.
 
 ## Installation
-#### 0. Install conda
+#### 1. Install conda
 
 We recommend using conda to manage the environment. If conda is not installed, please install Miniforge, Miniconda or Anaconda first.
 
 [Click here](https://docs.conda.io/en/latest/miniconda.html) to see guidance to install Miniconda.
 
-#### 1. Download EM3DFold
+#### 2. Download EM3DFold
 
 Download EM3DFold via `git` (recommended):
 ```bash
@@ -42,7 +42,7 @@ unzip main.zip
 cd EM3DFold-main
 ```
 
-#### 2. Create conda env and install dependencies
+#### 3. Create conda env and install dependencies
 
 We write the tedious installation steps into one script, so installation is one command like:
 ```bash
@@ -53,7 +53,7 @@ bash scripts/install.sh
 > [!NOTE]
 > If you are familiar with conda/pip/shell or you encounter problems when running the above command, you could run commands in `install.sh` step-by-step.
 
-#### 3. Download pretrained weights
+#### 4. Download pretrained weights
 
 The provided `download.sh` scripts automatically downloads the pretrained weights of EM3DFold and needed language models into specified directory:
 
@@ -110,12 +110,13 @@ EM_WEIGHTS_DIR=/path/to/weights em3dfold build --map ...
 - You can provide only `--protein`, only `--rna`, only `--dna`, or any valid combination of them.
 - If you launch >1 modeling job, the output directory **MUST** be different for each run.
 - Input protein template(s) may be provided as either single-chain or multi-chain PDB/mmCIF files.
-> [!TIP]
-> The number of input template chains should match the number of target protein chains. If the target contains repeated identical chains, provide the corresponding template multiple times. For example, to pass 2 identical chains `0.pdb` and 2 non-identical chains `1.pdb` and `2.pdb`, use `--protein-template 0.pdb 0.pdb 1.pdb 2.pdb`.
+  - The number of input template chains **SHOULD** match the number of target protein chains. If the target contains repeated identical chains, provide the corresponding template multiple times. 
+  - For example, to pass 2 identical chains `0.pdb` and 2 non-identical chains `1.pdb` and `2.pdb`, use `--protein-template 0.pdb 0.pdb 1.pdb 2.pdb`.
 - GPU device control:
   - `--device 0` means use `cuda:0`.
   - Multiple GPUs are supported with a comma-separated list such as `--device 0,1,2,3`.
-  - Multi-GPU acceleration is currently only used in the `CA/C4' prediction` and `denovo modeling` stages. More GPUs usually make the run faster, but the speedup is not linear.
+  - Multi-GPU acceleration is currently only used in the `CA/C4' prediction` and `denovo modeling` stages. 
+  - More GPUs usually make the run faster, but the speedup is not linear.
 - By default, intermediate results (predicted maps recycled structures) will be removed. Use `--keep-temp-files` if you want to keep them. 
 - Currently, only supports protein templates, nucleic-acids support depends on the community needs.
 

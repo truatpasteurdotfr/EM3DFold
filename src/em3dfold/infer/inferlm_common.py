@@ -1,6 +1,7 @@
 import argparse
 import importlib
 import os
+import shutil
 import sys
 import tqdm
 import warnings
@@ -10,6 +11,7 @@ import torch
 from omegaconf import OmegaConf
 
 from em3dfold.io.pdbio import chains_atom_pos_to_pdb
+from em3dfold.polymer_utils import residue_constants as rc
 from em3dfold.polymer_utils.polymer import get_polymer_from_file_path
 from em3dfold.utils.log_utils import progress_substage
 from em3dfold.utils.misc_utils import abspath, pjoin
@@ -141,6 +143,7 @@ def _polymer_to_chain_lists(polymer):
     chains_atom_mask = []
     chains_res_type = []
     chains_res_idx = []
+    chains_bfactor = []
 
     unique_chain_indices = np.unique(polymer.chain_index)
     for chain_idx in unique_chain_indices:
@@ -149,8 +152,33 @@ def _polymer_to_chain_lists(polymer):
         chains_atom_mask.append(polymer.atomc_mask[chain_mask])
         chains_res_type.append(polymer.aatype[chain_mask])
         chains_res_idx.append(polymer.residue_index[chain_mask])
+        chains_bfactor.append(_polymer_atomc_bfactors(polymer, chain_mask))
 
-    return chains_atom_pos, chains_atom_mask, chains_res_type, chains_res_idx
+    return chains_atom_pos, chains_atom_mask, chains_res_type, chains_res_idx, chains_bfactor
+
+
+def _polymer_atomc_bfactors(polymer, chain_mask):
+    chain_aatype = np.asarray(polymer.aatype[chain_mask], dtype=np.int32)
+    chain_atomc_mask = np.asarray(polymer.atomc_mask[chain_mask], dtype=np.float32)
+    chain_b_factors = np.asarray(polymer.b_factors[chain_mask], dtype=np.float32)
+    atomc_bfactors = np.zeros_like(chain_atomc_mask, dtype=np.float32)
+
+    for residue_idx, res_type in enumerate(chain_aatype):
+        if not (0 <= res_type < len(rc.index_to_restype_3)):
+            continue
+        res_name_3 = rc.index_to_restype_3[res_type]
+        atom_names = rc.restype3_to_atoms[res_name_3]
+        max_atoms = min(len(atom_names), atomc_bfactors.shape[1])
+        for atom_idx in range(max_atoms):
+            atom_name = atom_names[atom_idx]
+            if atom_name is None or atom_name == "":
+                continue
+            canonical_atom_idx = rc.atom_order.get(atom_name)
+            if canonical_atom_idx is None:
+                continue
+            atomc_bfactors[residue_idx, atom_idx] = chain_b_factors[residue_idx, canonical_atom_idx]
+
+    return atomc_bfactors
 
 
 def _write_merged_best_so_far_output(output_path, protein_path=None, na_path=None):
@@ -158,6 +186,7 @@ def _write_merged_best_so_far_output(output_path, protein_path=None, na_path=Non
     chains_atom_mask = []
     chains_res_type = []
     chains_res_idx = []
+    chains_bfactor = []
 
     for path in [protein_path, na_path]:
         if path is None or (not os.path.isfile(path)):
@@ -168,11 +197,13 @@ def _write_merged_best_so_far_output(output_path, protein_path=None, na_path=Non
             part_atom_mask,
             part_res_type,
             part_res_idx,
+            part_bfactor,
         ) = _polymer_to_chain_lists(polymer)
         chains_atom_pos.extend(part_atom_pos)
         chains_atom_mask.extend(part_atom_mask)
         chains_res_type.extend(part_res_type)
         chains_res_idx.extend(part_res_idx)
+        chains_bfactor.extend(part_bfactor)
 
     if len(chains_atom_pos) == 0:
         return None
@@ -183,6 +214,7 @@ def _write_merged_best_so_far_output(output_path, protein_path=None, na_path=Non
         chains_atom_mask,
         chains_res_type,
         chains_res_idx=chains_res_idx,
+        chains_bfactor=chains_bfactor,
         suffix="cif",
     )
     return output_path
@@ -452,6 +484,7 @@ def run_main(args, model_class, model_args, run_inference_fn):
     best_so_far_protein_path = None
     best_so_far_protein_num_res = -1
     last_na_after_prune_path = None
+    last_output_entropy_score_path = None
 
     for i in range(n_round_refine):
         args.no_use_random_affine = i != 0
@@ -497,6 +530,9 @@ def run_main(args, model_class, model_args, run_inference_fn):
             if na_after_num_res > 0
             else None
         )
+        entropy_output_path = output_info.get("output_entropy_score_path")
+        if entropy_output_path is not None and os.path.isfile(entropy_output_path):
+            last_output_entropy_score_path = entropy_output_path
         args.polymer = output_info.get("before_prune_path") or output_info.get("output_path")
         if (
             getattr(args, "pass_prev_aa_probs", True)
@@ -538,6 +574,11 @@ def run_main(args, model_class, model_args, run_inference_fn):
             )
         if last_na_after_prune_path is not None:
             print(f"# Final NA source = {last_na_after_prune_path}")
+
+    final_entropy_output_path = os.path.join(output_dir, "output_entropy_score.cif")
+    if last_output_entropy_score_path is not None:
+        shutil.copy(last_output_entropy_score_path, final_entropy_output_path)
+        print(f"# Final entropy-score output written to {final_entropy_output_path}")
 
     print("# Done all rounds")
 
