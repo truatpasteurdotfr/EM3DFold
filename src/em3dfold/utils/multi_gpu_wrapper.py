@@ -1,10 +1,11 @@
 import torch
-import torch.multiprocessing as mp
 import torch.nn as nn
 from typing import List
 from collections import namedtuple
 import os
 from contextlib import nullcontext
+import queue
+import threading
 
 from em3dfold.utils.misc_utils import filter_useless_warnings
 
@@ -88,43 +89,37 @@ def run_inference(
         model_args,
         state_dict_path: str,
         devices: List[str],
-        world_size: int,
-        input_queues: List[mp.Queue],
-        output_queues: List[mp.Queue],
+        input_queue,
+        output_queue,
         dtype: torch.dtype = torch.float32,
 ):
-    try:
-        device = devices[rank_id]
-        if str(device).startswith("cuda"):
-            torch.cuda.set_device(device)
-        input_queue = input_queues[rank_id]
-        output_queue = output_queues[rank_id]
-        model = init_model(model_class, model_args, state_dict_path, device)
-        filter_useless_warnings()
+    device = devices[rank_id]
+    if str(device).startswith("cuda"):
+        torch.cuda.set_device(device)
+    model = init_model(model_class, model_args, state_dict_path, device)
+    filter_useless_warnings()
 
-        while True:
-            with torch.no_grad():
-                try:
-                    inference_data = input_queue.get()
-                    if inference_data.status != 1:
-                        break
-                    model_inputs = send_dict_to_device(inference_data.data, device)
-                    if dtype == torch.float16:
-                        model_inputs = cast_dict_to_half(model_inputs)
-                    autocast_ctx = (
-                        torch.cuda.amp.autocast(dtype=dtype)
-                        if str(device).startswith("cuda") and dtype == torch.float16
-                        else nullcontext()
-                    )
-                    with autocast_ctx:
-                        output = model(**model_inputs)
-                    output = output.to("cpu").to(torch.float32)
-                    output_queue.put(output)
-                except Exception as e:
-                    output_queue.put(e)
-                    raise e
-    except Exception:
-        raise
+    while True:
+        with torch.no_grad():
+            try:
+                inference_data = input_queue.get()
+                if inference_data.status != 1:
+                    break
+                model_inputs = send_dict_to_device(inference_data.data, device)
+                if dtype == torch.float16:
+                    model_inputs = cast_dict_to_half(model_inputs)
+                autocast_ctx = (
+                    torch.cuda.amp.autocast(dtype=dtype)
+                    if str(device).startswith("cuda") and dtype == torch.float16
+                    else nullcontext()
+                )
+                with autocast_ctx:
+                    output = model(**model_inputs)
+                output = output.to("cpu").to(torch.float32)
+                output_queue.put(output)
+            except Exception as e:
+                output_queue.put(e)
+                return
 
 
 class MultiGPUWrapper(nn.Module):
@@ -137,36 +132,35 @@ class MultiGPUWrapper(nn.Module):
             fp16: bool = False
     ):
         super().__init__()
-        self.proc_ctx = None
         self.input_queues = []
         self.output_queues = []
+        self.workers = []
         self.world_size = len(devices)
         self.devices = devices
         self.dtype = torch.float32 if not fp16 else torch.float16
 
         if self.world_size > 1:
-            torch.multiprocessing.set_start_method('spawn', force=True)
-
-            self.input_queues, self.output_queues = [], []
-            for _ in range(self.world_size):
-                self.input_queues.append(mp.Queue())
-                self.output_queues.append(mp.Queue())
-
-            self.proc_ctx = mp.spawn(
-                run_inference,
-                args=(
-                    model_class,
-                    model_args,
-                    state_dict_path,
-                    devices,
-                    self.world_size,
-                    self.input_queues,
-                    self.output_queues,
-                    self.dtype
-                ),
-                nprocs=self.world_size,
-                join=False,
-            )
+            for rank_id in range(self.world_size):
+                input_queue = queue.Queue(maxsize=1)
+                output_queue = queue.Queue(maxsize=1)
+                worker = threading.Thread(
+                    target=run_inference,
+                    args=(
+                        rank_id,
+                        model_class,
+                        model_args,
+                        state_dict_path,
+                        devices,
+                        input_queue,
+                        output_queue,
+                        self.dtype,
+                    ),
+                    daemon=True,
+                )
+                worker.start()
+                self.input_queues.append(input_queue)
+                self.output_queues.append(output_queue)
+                self.workers.append(worker)
         else:
             self.model = init_model(model_class, model_args, state_dict_path, devices[0])
 
@@ -208,12 +202,8 @@ class MultiGPUWrapper(nn.Module):
                     input_queue.put(InferenceData(data=None, status=0))
                 except:
                     pass
-            for input_queue, output_queue in zip(self.input_queues, self.output_queues):
-                input_queue.close()
-                input_queue.join_thread()
-                output_queue.close()
-                output_queue.join_thread()
-            self.proc_ctx.join()
+            for worker in self.workers:
+                worker.join()
 
     def __enter__(self):
         return self
