@@ -48,9 +48,13 @@ def _finish_build_stage(start_time=None, *, skipped=False):
 
 
 def _emit_stage_runtime_hint(stage_name):
-    if stage_name in {"pred", "denovo"}:
-        progress("This stage may take a few minutes if the map/structure is large.")
+    if stage_name in {"pred"}:
+        progress("This stage may take a few minutes if the target map is large.")
+        progress("The runtime scales approx. linearly with map size: 300^3 voxels takes ~= 2 minutes")
 
+    if stage_name in {"denovo"}:
+        progress("This stage may take a few minutes if the target structure is large.")
+        progress("The runtime scales approx. linearly with res. counts: 3000 res. takes ~= 2 minutes each round")
 
 def _format_wall_time(timestamp=None):
     dt = datetime.now() if timestamp is None else datetime.fromtimestamp(timestamp)
