@@ -5,6 +5,7 @@ import torch.nn as nn
 from typing import List
 from collections import namedtuple
 import os
+from contextlib import nullcontext
 
 from em3dfold.utils.misc_utils import filter_useless_warnings
 
@@ -36,6 +37,21 @@ def send_dict_to_device(dictionary, device: str):
         elif is_iterable(dictionary[key]):
             dictionary[key] = [x.to(device) for x in dictionary[key]]
     return dictionary
+
+
+def clone_dict_to_cpu(dictionary):
+    output = {}
+    for key in dictionary:
+        if torch.is_tensor(dictionary[key]):
+            output[key] = dictionary[key].detach().to("cpu")
+        elif is_iterable(dictionary[key]):
+            output[key] = [
+                x.detach().to("cpu") if torch.is_tensor(x) else x
+                for x in dictionary[key]
+            ]
+        else:
+            output[key] = dictionary[key]
+    return output
 
 
 def cast_dict_to_half(dictionary):
@@ -79,6 +95,8 @@ def run_inference(
         dtype: torch.dtype = torch.float32,
 ):
     device = devices[rank_id]
+    if str(device).startswith("cuda"):
+        torch.cuda.set_device(device)
     input_queue = input_queues[rank_id]
     output_queue = output_queues[rank_id]
     model = init_model(model_class, model_args, state_dict_path, device)
@@ -86,19 +104,31 @@ def run_inference(
     dist.init_process_group("gloo", rank=rank_id, world_size=world_size)
     filter_useless_warnings()
 
-    while True:
-        with torch.no_grad():
-            try:
-                inference_data = input_queue.get()
-                if inference_data.status != 1:
-                    break
-                with torch.cuda.amp.autocast(dtype=dtype):
-                    output = model(**inference_data.data)
-                output = output.to("cpu").to(torch.float32)
-                output_queue.put(output)
-            except Exception as e:
-                output_queue.put(None)
-                raise e
+    try:
+        while True:
+            with torch.no_grad():
+                try:
+                    inference_data = input_queue.get()
+                    if inference_data.status != 1:
+                        break
+                    model_inputs = send_dict_to_device(inference_data.data, device)
+                    if dtype == torch.float16:
+                        model_inputs = cast_dict_to_half(model_inputs)
+                    autocast_ctx = (
+                        torch.cuda.amp.autocast(dtype=dtype)
+                        if str(device).startswith("cuda") and dtype == torch.float16
+                        else nullcontext()
+                    )
+                    with autocast_ctx:
+                        output = model(**model_inputs)
+                    output = output.to("cpu").to(torch.float32)
+                    output_queue.put(output)
+                except Exception as e:
+                    output_queue.put(e)
+                    raise e
+    finally:
+        if dist.is_initialized():
+            dist.destroy_process_group()
 
 
 class MultiGPUWrapper(nn.Module):
@@ -148,21 +178,30 @@ class MultiGPUWrapper(nn.Module):
         output_list = []
         for i, data in enumerate(data_list):
             device = self.devices[i]
-            if self.dtype == torch.float16:
-                data = cast_dict_to_half(data)
             if self.world_size > 1:
                 input_queue = self.input_queues[i]
                 input_queue.put(
-                    InferenceData(data=send_dict_to_device(data, device), status=1)
+                    InferenceData(data=clone_dict_to_cpu(data), status=1)
                 )
             else:
-                with torch.cuda.amp.autocast(dtype=self.dtype), torch.no_grad():
+                model_inputs = send_dict_to_device(clone_dict_to_cpu(data), device)
+                if self.dtype == torch.float16:
+                    model_inputs = cast_dict_to_half(model_inputs)
+                autocast_ctx = (
+                    torch.cuda.amp.autocast(dtype=self.dtype)
+                    if str(device).startswith("cuda") and self.dtype == torch.float16
+                    else nullcontext()
+                )
+                with autocast_ctx, torch.no_grad():
                     output_list.append(
-                        self.model(**send_dict_to_device(data, device)).to("cpu").to(torch.float32)
+                        self.model(**model_inputs).to("cpu").to(torch.float32)
                     )
         if self.world_size > 1:
             for output_queue, _ in zip(self.output_queues, data_list):
-                output_list.append(output_queue.get())
+                output = output_queue.get()
+                if isinstance(output, Exception):
+                    raise output
+                output_list.append(output)
         return output_list
 
 
