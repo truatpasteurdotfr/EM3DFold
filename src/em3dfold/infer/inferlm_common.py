@@ -487,7 +487,12 @@ def run_main(args, model_class, model_args, run_inference_fn):
                 )
             )
 
-        last_na_after_prune_path = output_info.get("na_after_prune_path")
+        na_after_num_res = int(output_info.get("na_after_num_res", 0) or 0)
+        last_na_after_prune_path = (
+            output_info.get("na_after_prune_path")
+            if na_after_num_res > 0
+            else None
+        )
         args.polymer = output_info.get("before_prune_path") or output_info.get("output_path")
         if (
             getattr(args, "pass_prev_aa_probs", True)

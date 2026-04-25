@@ -866,7 +866,7 @@ def main(args):
             inferlm_args.dna_seq = dna_seq_path
             inferlm_args.rna_seq = rna_seq_path
             inferlm_args.min_na_chain_len = 3
-            inferlm_args.fallback_to_predicted_na_types = True
+            inferlm_args.fallback_to_predicted_na_types = bool(run_na)
             inferlm_args.pass_prev_aa_probs = True
             inferlm_args.pass_prev_rmsd = True
             inferlm_args.pass_prev_node = True

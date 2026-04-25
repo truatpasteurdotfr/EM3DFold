@@ -751,8 +751,20 @@ def final_results_align_to_sequence(
     dna_seqs = _read_sequences(dna_seq_dir, "DNA") if dna_seq_dir is not None else []
     rna_seqs = _read_sequences(rna_seq_dir, "RNA") if rna_seq_dir is not None else []
 
+    has_protein_input = len(prot_seqs) > 0
+    has_na_input = (len(dna_seqs) + len(rna_seqs)) > 0
+
     prot_mask = np.asarray(final_results["prot_mask"], dtype=bool)
-    na_mask = ~prot_mask
+    if has_protein_input and (not has_na_input):
+        print("# Protein-only mode: disable nucleic-acid postprocess outputs")
+        prot_mask = np.ones_like(prot_mask, dtype=bool)
+        na_mask = np.zeros_like(prot_mask, dtype=bool)
+    elif has_na_input and (not has_protein_input):
+        print("# Nucleic-acid-only mode: disable protein postprocess outputs")
+        prot_mask = np.zeros_like(prot_mask, dtype=bool)
+        na_mask = np.ones_like(prot_mask, dtype=bool)
+    else:
+        na_mask = ~prot_mask
 
     residue_type_entropy, residue_type_confidence = _compute_residue_type_scores(
         final_results["pred_aatype"],
@@ -886,7 +898,7 @@ def final_results_align_to_sequence(
     )
 
     prot_chains = []
-    if np.any(prot_mask):
+    if has_protein_input and np.any(prot_mask):
         idx_exist_to_original = np.arange(len(pred_atom_pos), dtype=np.int32)[prot_mask]
         traced = flood_fill_with_edge_dual(
             pred_atom_pos[prot_mask],
@@ -902,7 +914,7 @@ def final_results_align_to_sequence(
         print(f"# Trace protein into {len(prot_chains)} dummy chains")
 
     na_chains = []
-    if np.any(na_mask):
+    if has_na_input and np.any(na_mask):
         idx_exist_to_original = np.arange(len(pred_atom_pos), dtype=np.int32)[na_mask]
         traced = flood_fill_with_edge_dual(
             pred_atom_pos[na_mask],
@@ -963,6 +975,7 @@ def final_results_align_to_sequence(
             prot_before_chain_types,
         )
 
+    if len(prot_after_chains) > 0:
         _print_chain_stats("Protein after prune", prot_after_chains)
         protein_after_prune_path = os.path.join(out_dir, "protein_after_prune.cif")
         _write_chain_file(
@@ -982,6 +995,7 @@ def final_results_align_to_sequence(
             na_before_chain_types,
         )
 
+    if len(na_after_chains) > 0:
         _print_chain_stats("NA after prune", na_after_chains)
         na_after_prune_path = os.path.join(out_dir, "na_after_prune.cif")
         _write_chain_file(
