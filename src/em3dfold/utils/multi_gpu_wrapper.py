@@ -1,6 +1,5 @@
 import torch
 import torch.multiprocessing as mp
-import torch.distributed as dist
 import torch.nn as nn
 from typing import List
 from collections import namedtuple
@@ -94,17 +93,15 @@ def run_inference(
         output_queues: List[mp.Queue],
         dtype: torch.dtype = torch.float32,
 ):
-    device = devices[rank_id]
-    if str(device).startswith("cuda"):
-        torch.cuda.set_device(device)
-    input_queue = input_queues[rank_id]
-    output_queue = output_queues[rank_id]
-    model = init_model(model_class, model_args, state_dict_path, device)
-
-    dist.init_process_group("gloo", rank=rank_id, world_size=world_size)
-    filter_useless_warnings()
-
     try:
+        device = devices[rank_id]
+        if str(device).startswith("cuda"):
+            torch.cuda.set_device(device)
+        input_queue = input_queues[rank_id]
+        output_queue = output_queues[rank_id]
+        model = init_model(model_class, model_args, state_dict_path, device)
+        filter_useless_warnings()
+
         while True:
             with torch.no_grad():
                 try:
@@ -126,9 +123,8 @@ def run_inference(
                 except Exception as e:
                     output_queue.put(e)
                     raise e
-    finally:
-        if dist.is_initialized():
-            dist.destroy_process_group()
+    except Exception:
+        raise
 
 
 class MultiGPUWrapper(nn.Module):
