@@ -652,6 +652,8 @@ def main(args):
     progress(f"EM3DFold begin at {_format_wall_time(build_started_at)}")
     for line in BUILD_CONTACT_LINES:
         progress(line)
+    resolved_devices = get_device_names(args.device)
+    progress(f"Devices: {resolved_devices} (n={len(resolved_devices)})")
     progress(f"Output: {out_dir}")
     progress(f"Temp dir: {temp_dir}")
     runtime_log_path = get_runtime_log_path()
