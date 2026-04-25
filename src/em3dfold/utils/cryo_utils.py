@@ -289,7 +289,7 @@ def iterative_percentile(data, lower_bound=0.0, delta=10.0):
 ### Written by Jiahua He to save memory ###
 ###########################################
 # generator version
-def chunk_generator(padded_map, maximum, box_size, stride):
+def chunk_generator(padded_map, maximum=None, box_size=48, stride=16, pre_scaled=False):
     assert stride <= box_size
     padded_map_shape = np.shape(padded_map)
     start_point = box_size - stride
@@ -309,7 +309,10 @@ def chunk_generator(padded_map, maximum, box_size, stride):
         if next_chunk.max() <= 0.0:
             continue
         else:
-            yield cur_x0, cur_y0, cur_z0, next_chunk.clip(min=0.0, max=maximum) / maximum * 100.0
+            if pre_scaled:
+                yield cur_x0, cur_y0, cur_z0, next_chunk
+            else:
+                yield cur_x0, cur_y0, cur_z0, next_chunk.clip(min=0.0, max=maximum) / maximum * 100.0
 
 # get a batch of chunks from generator
 def get_batch_from_generator(generator, batch_size, dtype=np.float32):

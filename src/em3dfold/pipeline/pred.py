@@ -4,14 +4,15 @@ import torch
 import random
 import argparse
 import numpy as np
+import queue
+import threading
 from math import ceil
 import warnings
-from typing import List
 
 warnings.filterwarnings("ignore")
 
 from em3dfold.scunet.scunet import SCUNet as Model
-from em3dfold.utils.torch_utils import get_device_names
+from em3dfold.utils.torch_utils import get_batch_slices, get_device_names
 from em3dfold.utils.cryo_utils import (
     parse_map,
     write_map,
@@ -23,6 +24,7 @@ from em3dfold.utils.cryo_utils import (
 from em3dfold.utils.log_utils import progress_substage
 from em3dfold.utils.misc_utils import pjoin, abspath
 from em3dfold.utils.torch_utils import clear_cuda_cache
+from em3dfold.utils.multi_gpu_wrapper import MultiGPUWrapper
 
 EM_WEIGHTS_ENV_VAR = "EM_WEIGHTS_DIR"
 PROGRESS_LOGGER_NAME = "em3dfold.pred.progress"
@@ -64,76 +66,59 @@ def _resolve_model_dir(model_dir, dir_script):
     return pjoin(dir_script, "..", "weights")
 
 
-def _load_scunet_state_dict(model_file):
-    model_state_dict = torch.load(model_file, map_location="cpu")
-    if "model" in model_state_dict:
-        model_state_dict = model_state_dict["model"]
-    return {k.replace("module.", ""): v for k, v in model_state_dict.items()}
+class _BatchPrefetcher:
+    _END = object()
 
-
-class _SCUNetBatchRunner:
-    def __init__(self, model_file, box_size, n_classes, devices: List[str]):
-        self.model_file = model_file
-        self.box_size = int(box_size)
-        self.n_classes = int(n_classes)
-        self.devices = list(devices)
-        self.models = []
-
-        state_dict = _load_scunet_state_dict(model_file)
-        for device in self.devices:
-            model = Model(input_resolution=self.box_size, n_classes=self.n_classes)
-            model.load_state_dict(state_dict)
-            model = model.to(device)
-            model.eval()
-            self.models.append(model)
+    def __init__(self, generator, batch_size, *, dtype=np.float32, max_prefetch=2):
+        self.generator = generator
+        self.batch_size = int(batch_size)
+        self.dtype = dtype
+        self._queue = queue.Queue(maxsize=max_prefetch)
+        self._worker = None
+        self._stop_event = threading.Event()
 
     def __enter__(self):
+        self._worker = threading.Thread(target=self._run, daemon=True)
+        self._worker.start()
         return self
 
     def __exit__(self, exc_type, exc, tb):
-        self.close()
+        self._stop_event.set()
+        if self._worker is not None:
+            self._worker.join()
+            self._worker = None
 
-    def close(self):
-        for model in self.models:
-            del model
-        self.models = []
-        for device in self.devices:
-            clear_cuda_cache(device, note=os.path.basename(self.model_file))
+    def _put_until_stopped(self, item):
+        while not self._stop_event.is_set():
+            try:
+                self._queue.put(item, timeout=0.1)
+                return
+            except queue.Full:
+                continue
 
-    def infer_chunks(self, chunks: np.ndarray) -> np.ndarray:
-        x_batch = torch.from_numpy(chunks).view(
-            -1, 1, self.box_size, self.box_size, self.box_size
-        )
-        num_chunks = int(x_batch.shape[0])
+    def _run(self):
+        try:
+            while not self._stop_event.is_set():
+                batch = get_batch_from_generator(
+                    self.generator,
+                    self.batch_size,
+                    dtype=self.dtype,
+                )
+                positions, _ = batch
+                if len(positions) == 0:
+                    self._put_until_stopped(self._END)
+                    return
+                self._put_until_stopped(batch)
+        except Exception as exc:
+            self._put_until_stopped(exc)
 
-        if num_chunks == 0:
-            return np.zeros(
-                (0, self.n_classes, self.box_size, self.box_size, self.box_size),
-                dtype=np.float32,
-            )
-
-        if len(self.models) == 1:
-            with torch.inference_mode():
-                y_pred = self.models[0](x_batch.to(self.devices[0]))
-            return y_pred.detach().cpu().numpy()
-
-        chunk_index_groups = [
-            idxs for idxs in np.array_split(np.arange(num_chunks), len(self.models)) if len(idxs) > 0
-        ]
-        y_pred = np.zeros(
-            (num_chunks, self.n_classes, self.box_size, self.box_size, self.box_size),
-            dtype=np.float32,
-        )
-        pending_outputs = []
-
-        with torch.inference_mode():
-            for model, device, chunk_indices in zip(self.models, self.devices, chunk_index_groups):
-                x_sub = x_batch[chunk_indices].to(device)
-                pending_outputs.append((chunk_indices, model(x_sub)))
-
-        for chunk_indices, output in pending_outputs:
-            y_pred[chunk_indices] = output.detach().cpu().numpy()
-        return y_pred
+    def get(self):
+        item = self._queue.get()
+        if item is self._END:
+            return [], np.zeros((0,), dtype=self.dtype)
+        if isinstance(item, Exception):
+            raise item
+        return item
 
 
 def load_model_and_run_inference_on_map(model_file, map_file, **kwargs):
@@ -164,25 +149,34 @@ def load_model_and_run_inference_on_map(model_file, map_file, **kwargs):
         maximum = np.percentile(positive_values, 99.999)
     else:
         maximum = float(np.max(em_map))
+    if maximum > 0.0:
+        scaled_map = np.clip(padded_map, a_min=0.0, a_max=maximum).astype(np.float32, copy=False)
+        scaled_map = scaled_map / maximum * 100.0
+    else:
+        scaled_map = np.zeros_like(padded_map, dtype=np.float32)
 
     map_pred = np.zeros((n_classes,) + padded_map.shape, dtype=np.float32)
     denominator = np.zeros((n_classes,) + padded_map.shape, dtype=np.float32)
 
     print("# Start processing")
-    generator = chunk_generator(padded_map, maximum, box_size, stride)
+    generator = chunk_generator(scaled_map, box_size=box_size, stride=stride, pre_scaled=True)
     ncx, ncy, ncz = [ceil(nxyz[2 - i] / stride) for i in range(3)]
     total_steps = float(ncx * ncy * ncz)
     acc_steps, acc_steps_x, l_bar = 0.0, 0, 0
 
     ts = time.time()
+    model_args = {
+        "input_resolution": int(box_size),
+        "n_classes": int(n_classes),
+    }
     effective_batch_size = batch_size * max(len(devices), 1)
-    with _SCUNetBatchRunner(model_file, box_size, n_classes, devices) as runner:
+    with MultiGPUWrapper(Model, model_args, model_file, devices) as wrapper, _BatchPrefetcher(
+        generator,
+        effective_batch_size,
+        dtype=np.float32,
+    ) as prefetcher:
         while True:
-            positions, chunks = get_batch_from_generator(
-                generator,
-                effective_batch_size,
-                dtype=np.float32,
-            )
+            positions, chunks = prefetcher.get()
 
             chunks /= scale
 
@@ -197,7 +191,18 @@ def load_model_and_run_inference_on_map(model_file, map_file, **kwargs):
                 bar = f"|{'#' * (2 * l_bar)}{'-' * ((20 - l_bar) * 2)}| {int(l_bar * 5)}% {te - ts:.4f} seconds elapsed"
                 print(f"\r{bar}", flush=True)
 
-            y_pred = runner.infer_chunks(chunks)
+            x_batch = torch.from_numpy(chunks).view(
+                -1, 1, box_size, box_size, box_size
+            )
+            meta_batches = get_batch_slices(len(chunks), batch_size)
+            meta_batch_list = [{"x0": x_batch[mb]} for mb in meta_batches]
+            meta_batch_out = wrapper(meta_batch_list)
+            y_pred = np.zeros(
+                (len(chunks), n_classes, box_size, box_size, box_size),
+                dtype=np.float32,
+            )
+            for output, mb in zip(meta_batch_out, meta_batches):
+                y_pred[np.asarray(mb, dtype=np.int32)] = output.detach().cpu().numpy()
             map_pred, denominator = map_batch_to_map(map_pred, denominator, positions, y_pred, box_size)
 
     map_pred = (map_pred / denominator.clip(min=1))[
