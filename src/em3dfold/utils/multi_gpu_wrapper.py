@@ -76,10 +76,9 @@ def cast_dict_to_full(dictionary):
 def init_model(model_class, model_args, state_dict_path: str, device: str) -> nn.Module:
     model = model_class(**model_args).eval()
     checkpoint = torch.load(state_dict_path, map_location="cpu")
-    if "model" not in checkpoint:
-        model.load_state_dict(checkpoint)
-    else:
-        model.load_state_dict(checkpoint["model"])
+    state_dict = checkpoint["model"] if ("model" in checkpoint) else checkpoint
+    state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
+    model.load_state_dict(state_dict)
     model.to(device)
     return model
 
