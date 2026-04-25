@@ -555,9 +555,17 @@ def seed_everything(seed: int = 42):
 
 def clear_cuda_cache(device=None, note: str = None):
     gc.collect()
-    device_str = "" if device is None else str(device).lower()
+    if device is None:
+        device_tokens = []
+    else:
+        device_tokens = [
+            token.strip().lower()
+            for token in str(device).split(",")
+            if len(token.strip()) > 0
+        ]
     should_clear = torch.cuda.is_available() and (
-        device is None or "cuda" in device_str or device_str.isdigit()
+        device is None
+        or any(("cuda" in token) or token.isdigit() for token in device_tokens)
     )
     if should_clear:
         if note is not None:

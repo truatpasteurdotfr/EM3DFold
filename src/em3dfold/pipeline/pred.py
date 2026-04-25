@@ -5,8 +5,8 @@ import random
 import argparse
 import numpy as np
 from math import ceil
-from torch import FloatTensor as FT
 import warnings
+from typing import List
 
 warnings.filterwarnings("ignore")
 
@@ -64,13 +64,85 @@ def _resolve_model_dir(model_dir, dir_script):
     return pjoin(dir_script, "..", "weights")
 
 
+def _load_scunet_state_dict(model_file):
+    model_state_dict = torch.load(model_file, map_location="cpu")
+    if "model" in model_state_dict:
+        model_state_dict = model_state_dict["model"]
+    return {k.replace("module.", ""): v for k, v in model_state_dict.items()}
+
+
+class _SCUNetBatchRunner:
+    def __init__(self, model_file, box_size, n_classes, devices: List[str]):
+        self.model_file = model_file
+        self.box_size = int(box_size)
+        self.n_classes = int(n_classes)
+        self.devices = list(devices)
+        self.models = []
+
+        state_dict = _load_scunet_state_dict(model_file)
+        for device in self.devices:
+            model = Model(input_resolution=self.box_size, n_classes=self.n_classes)
+            model.load_state_dict(state_dict)
+            model = model.to(device)
+            model.eval()
+            self.models.append(model)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
+
+    def close(self):
+        for model in self.models:
+            del model
+        self.models = []
+        for device in self.devices:
+            clear_cuda_cache(device, note=os.path.basename(self.model_file))
+
+    def infer_chunks(self, chunks: np.ndarray) -> np.ndarray:
+        x_batch = torch.from_numpy(chunks).view(
+            -1, 1, self.box_size, self.box_size, self.box_size
+        )
+        num_chunks = int(x_batch.shape[0])
+
+        if num_chunks == 0:
+            return np.zeros(
+                (0, self.n_classes, self.box_size, self.box_size, self.box_size),
+                dtype=np.float32,
+            )
+
+        if len(self.models) == 1:
+            with torch.inference_mode():
+                y_pred = self.models[0](x_batch.to(self.devices[0]))
+            return y_pred.detach().cpu().numpy()
+
+        chunk_index_groups = [
+            idxs for idxs in np.array_split(np.arange(num_chunks), len(self.models)) if len(idxs) > 0
+        ]
+        y_pred = np.zeros(
+            (num_chunks, self.n_classes, self.box_size, self.box_size, self.box_size),
+            dtype=np.float32,
+        )
+        pending_outputs = []
+
+        with torch.inference_mode():
+            for model, device, chunk_indices in zip(self.models, self.devices, chunk_index_groups):
+                x_sub = x_batch[chunk_indices].to(device)
+                pending_outputs.append((chunk_indices, model(x_sub)))
+
+        for chunk_indices, output in pending_outputs:
+            y_pred[chunk_indices] = output.detach().cpu().numpy()
+        return y_pred
+
+
 def load_model_and_run_inference_on_map(model_file, map_file, **kwargs):
     apix = kwargs["apix"]
     stride = kwargs["stride"]
     box_size = kwargs["box_size"]
     n_classes = kwargs["n_classes"]
     batch_size = kwargs["batch_size"]
-    device = kwargs["device"]
+    devices = kwargs["devices"]
     scale = kwargs["scale"]
 
     print(f"# Load map data from {map_file}")
@@ -82,14 +154,9 @@ def load_model_and_run_inference_on_map(model_file, map_file, **kwargs):
 
     if np.min(nxyz) > 400:
         stride = max(stride, 16)
-
-    model_state_dict = torch.load(model_file, map_location="cpu")
-    model_state_dict = {k.replace("module.", ""): v for k, v in model_state_dict.items()}
-
-    model = Model(input_resolution=box_size, n_classes=n_classes)
-    model.load_state_dict(model_state_dict)
-    model = model.to(device)
-    model.eval()
+    print(f"# Running on devices {devices}")
+    print(f"# Per-device batch size = {batch_size}")
+    print(f"# Effective batch size = {batch_size * max(len(devices), 1)}")
 
     padded_map = pad_map(em_map, box_size, dtype=np.float32, padding=0.0)
     positive_values = em_map[em_map > 0]
@@ -108,9 +175,14 @@ def load_model_and_run_inference_on_map(model_file, map_file, **kwargs):
     acc_steps, acc_steps_x, l_bar = 0.0, 0, 0
 
     ts = time.time()
-    with torch.inference_mode():
+    effective_batch_size = batch_size * max(len(devices), 1)
+    with _SCUNetBatchRunner(model_file, box_size, n_classes, devices) as runner:
         while True:
-            positions, chunks = get_batch_from_generator(generator, batch_size, dtype=np.float32)
+            positions, chunks = get_batch_from_generator(
+                generator,
+                effective_batch_size,
+                dtype=np.float32,
+            )
 
             chunks /= scale
 
@@ -125,9 +197,7 @@ def load_model_and_run_inference_on_map(model_file, map_file, **kwargs):
                 bar = f"|{'#' * (2 * l_bar)}{'-' * ((20 - l_bar) * 2)}| {int(l_bar * 5)}% {te - ts:.4f} seconds elapsed"
                 print(f"\r{bar}", flush=True)
 
-            x_batch = FT(chunks).view(-1, 1, box_size, box_size, box_size).to(device)
-            y_pred = model(x_batch)
-            y_pred = y_pred.cpu().detach().numpy()
+            y_pred = runner.infer_chunks(chunks)
             map_pred, denominator = map_batch_to_map(map_pred, denominator, positions, y_pred, box_size)
 
     map_pred = (map_pred / denominator.clip(min=1))[
@@ -140,9 +210,6 @@ def load_model_and_run_inference_on_map(model_file, map_file, **kwargs):
     if acc_steps < total_steps:
         print("\r|########################################| 100%", flush=True)
 
-    del model
-    del model_state_dict
-    clear_cuda_cache(device, note=os.path.basename(model_file))
     return map_pred, em_map, origin, nxyz, voxel_size
 
 
@@ -157,9 +224,9 @@ test_params = {
 }
 
 
-def inference_segmentation(dir_map, contour, dir_model, dir_out, data_params, test_params, device):
+def inference_segmentation(dir_map, contour, dir_model, dir_out, data_params, test_params, devices):
     print(f"# Select map contour at {contour:.6f}", flush=True)
-    print(f"# Running on device {device}")
+    print(f"# Running on devices {devices}")
 
     map_pred, em_map, origin, _, voxel_size = load_model_and_run_inference_on_map(
         model_file=dir_model,
@@ -169,7 +236,7 @@ def inference_segmentation(dir_map, contour, dir_model, dir_out, data_params, te
         stride=24, # hard coded, larger stride for time saving
         n_classes=3,
         batch_size=test_params["batch_size"],
-        device=device,
+        devices=devices,
         scale=1.0, # 100.0
     )
 
@@ -199,9 +266,9 @@ def inference_segmentation(dir_map, contour, dir_model, dir_out, data_params, te
     print(f"# Among prot and na voxels. na   ratio is {n_na / denom_mix:.4f}", flush=True)
 
 
-def inference_nucleic_c4(dir_map, contour, dir_model, dir_out, data_params, test_params, device):
+def inference_nucleic_c4(dir_map, contour, dir_model, dir_out, data_params, test_params, devices):
     print(f"# Select map contour at {contour:.6f}", flush=True)
-    print(f"# Running on device {device}")
+    print(f"# Running on devices {devices}")
 
     map_pred, em_map, origin, _, voxel_size = load_model_and_run_inference_on_map(
         model_file=dir_model,
@@ -211,7 +278,7 @@ def inference_nucleic_c4(dir_map, contour, dir_model, dir_out, data_params, test
         stride=16, # 12
         n_classes=1,
         batch_size=test_params["batch_size"],
-        device=device,
+        devices=devices,
         scale=1.0,
     )
     mask = np.where(em_map <= contour, 0, 1).astype(np.int8)
@@ -221,8 +288,8 @@ def inference_nucleic_c4(dir_map, contour, dir_model, dir_out, data_params, test
     print(f"# Write map to {dir_map_out}", flush=True)
 
 
-def inference_nucleic_aa(dir_map, dir_model, dir_out, data_params, test_params, device):
-    print(f"# Running on device {device}")
+def inference_nucleic_aa(dir_map, dir_model, dir_out, data_params, test_params, devices):
+    print(f"# Running on devices {devices}")
 
     map_pred, _, origin, _, voxel_size = load_model_and_run_inference_on_map(
         model_file=dir_model,
@@ -232,7 +299,7 @@ def inference_nucleic_aa(dir_map, dir_model, dir_out, data_params, test_params, 
         stride=16, # 12
         n_classes=4,
         batch_size=test_params["batch_size"],
-        device=device,
+        devices=devices,
         scale=1.0,
     )
 
@@ -242,9 +309,9 @@ def inference_nucleic_aa(dir_map, dir_model, dir_out, data_params, test_params, 
     print(f"# Write aa logits file to {dir_map_out}", flush=True)
 
 
-def inference_protein_ca(dir_map, contour, dir_model, dir_out, data_params, test_params, device):
+def inference_protein_ca(dir_map, contour, dir_model, dir_out, data_params, test_params, devices):
     print(f"# Select map contour at {contour:.6f}", flush=True)
-    print(f"# Running on device {device}")
+    print(f"# Running on devices {devices}")
 
     map_pred, em_map, origin, _, voxel_size = load_model_and_run_inference_on_map(
         model_file=dir_model,
@@ -254,7 +321,7 @@ def inference_protein_ca(dir_map, contour, dir_model, dir_out, data_params, test
         stride=data_params["stride"],
         n_classes=3,
         batch_size=test_params["batch_size"],
-        device=device,
+        devices=devices,
         scale=1.0,
     )
 
@@ -314,7 +381,7 @@ def main(args):
         test_params["batch_size"] = args.batchsize
 
     devices = get_device_names(args.device)
-    device = devices[0]
+    print(f"# Parsed compute devices = {devices}")
 
     progress_substage("1 segmentation", logger_name=PROGRESS_LOGGER_NAME)
     inference_segmentation(
@@ -324,7 +391,7 @@ def main(args):
         dir_out=dir_out,
         data_params=data_params,
         test_params=test_params,
-        device=device,
+        devices=devices,
     )
 
     if args.protein or args.nucleic:
@@ -338,7 +405,7 @@ def main(args):
             dir_out=dir_out,
             data_params=data_params,
             test_params=test_params,
-            device=device,
+            devices=devices,
         )
 
     if args.nucleic:
@@ -349,7 +416,7 @@ def main(args):
             dir_out=dir_out,
             data_params=data_params,
             test_params=test_params,
-            device=device,
+            devices=devices,
         )
 
         inference_nucleic_aa(
@@ -358,10 +425,11 @@ def main(args):
             dir_out=dir_out,
             data_params=data_params,
             test_params=test_params,
-            device=device,
+            devices=devices,
         )
 
-    clear_cuda_cache(device, note="pred")
+    for device in devices:
+        clear_cuda_cache(device, note="pred")
 
     end = time.time()
     print(f"# Time consuming {end - start:.4f}", flush=True)
@@ -372,8 +440,20 @@ def add_args(parser):
     parser.add_argument("--input", "-i", type=str, required=True, help="Input EM density map file")
     parser.add_argument("--output", "-o", type=str, default="./", help="Output directory of predicted maps")
     parser.add_argument("--contour", "-c", type=float, default=1e-6, help="Input contour level")
-    parser.add_argument("--batchsize", "-b", type=int, default=40, help="Batchsize for prediction")
-    parser.add_argument("--device", "-g", type=str, help="Which GPU to use, '0' for #0", default="0")
+    parser.add_argument(
+        "--batchsize",
+        "-b",
+        type=int,
+        default=40,
+        help="Per-device batch size for prediction",
+    )
+    parser.add_argument(
+        "--device",
+        "-g",
+        type=str,
+        help="Which device(s) to use, e.g. '0', 'cpu', or '0,1,2,3'",
+        default="0",
+    )
     parser.add_argument(
         "--model",
         "--weights-dir",

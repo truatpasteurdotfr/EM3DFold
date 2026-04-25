@@ -69,7 +69,11 @@ def prepare_common_args(parser):
         default=None,
     )
     parser.add_argument("--output-dir", "-o", default=".", help="Where to save the results")
-    parser.add_argument("--device", default="cpu", help="Which device to run on")
+    parser.add_argument(
+        "--device",
+        default="cpu",
+        help="Which device to run on. Supports 'cpu', a single GPU such as '0', or a comma-separated GPU list such as '0,1,2,3'.",
+    )
     parser.add_argument("--crop-length", type=int, default=num_res_per_run, help="How many points per batch")
     parser.add_argument("--repeat-per-residue", default=1, type=int, help="How many times to repeat per residue")
     parser.add_argument("--run-iters", default=2, type=int, help="Cycling steps for model forward")

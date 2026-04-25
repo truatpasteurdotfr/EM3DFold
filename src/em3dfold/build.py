@@ -19,7 +19,7 @@ from em3dfold.io.pdbio import (
 from em3dfold.io.seqio import read_fasta
 from em3dfold.utils.log_utils import get_runtime_log_path, progress
 from em3dfold.utils.misc_utils import pjoin, abspath
-from em3dfold.utils.torch_utils import clear_cuda_cache
+from em3dfold.utils.torch_utils import clear_cuda_cache, get_device_names
 
 EM_WEIGHTS_ENV_VAR = "EM_WEIGHTS_DIR"
 BUILD_CONTACT_LINES = (
@@ -76,7 +76,12 @@ def add_args(parser):
         help="Input protein template file(s); each protein chain will be split into temp_dir/templates/template_x_chain_x.cif",
     )
     parser.add_argument("--output", "-o", help="Output directory", required=True)
-    parser.add_argument("--device", "--gpu", help="GPU device, default = '0'", default="0")
+    parser.add_argument(
+        "--device",
+        "--gpu",
+        help="Compute device. Use a single device such as '0' or 'cpu', or a comma-separated GPU list such as '0,1,2,3' for pred/denovo.",
+        default="0",
+    )
     parser.add_argument(
         "--lm-weights-dir",
         help="Optional shared directory for ESM and RiNALMo weights",
@@ -203,6 +208,10 @@ def _normalize_torch_device(device):
     if device.isdigit():
         return f"cuda:{device}"
     return device
+
+
+def _primary_device(device):
+    return get_device_names(device)[0]
 
 
 def _resolve_env_weights_root():
@@ -650,6 +659,9 @@ def main(args):
         progress(f"Run log: {runtime_log_path}")
     progress(f"Keep temporary files: {bool(args.keep_temp_files)}")
 
+    multi_stage_device = args.device
+    single_stage_device = _primary_device(args.device)
+
     has_protein_arg = _has_cli_sequence_arg(args.protein)
     has_rna_arg = _has_cli_sequence_arg(args.rna)
     has_dna_arg = _has_cli_sequence_arg(args.dna)
@@ -670,7 +682,7 @@ def main(args):
         preprocess_args.dna = args.dna
         preprocess_args.output = temp_dir
 
-        preprocess_args.device = args.device
+        preprocess_args.device = single_stage_device
 
         preprocess.main(preprocess_args)
         end = time.time()
@@ -718,14 +730,14 @@ def main(args):
         pred_args.output = pjoin(temp_dir, "pred")
         pred_args.contour = 1e-6
         pred_args.batchsize = 40
-        pred_args.device = args.device
+        pred_args.device = multi_stage_device
         pred_args.model = pred_weights_dir
         pred_args.stride = 16 # 12
         pred_args.protein = run_protein
         pred_args.nucleic = run_nucleic
 
         pred.main(pred_args)
-        clear_cuda_cache(args.device, note="pred")
+        clear_cuda_cache(multi_stage_device, note="pred")
         end = time.time()
 
         print("# Time = {:.4f}".format(end - start))
@@ -748,7 +760,7 @@ def main(args):
                 _run_getp_pipeline(
                     map_path=pjoin(temp_dir, "pred", "c4.mrc"),
                     output_dir=pjoin(temp_dir, "pred", "c4_getp"),
-                    device=args.device,
+                    device=single_stage_device,
                     raw_output_path=pjoin(temp_dir, "pred", "raw_c4.pdb"),
                     atom_name="C4'",
                     res_name=("A" if rna_seq_path is not None else "DA"),
@@ -772,7 +784,7 @@ def main(args):
                 _run_getp_pipeline(
                     map_path=pjoin(temp_dir, "pred", "ca.mrc"),
                     output_dir=pjoin(temp_dir, "pred", "ca_getp"),
-                    device=args.device,
+                    device=single_stage_device,
                     raw_output_path=pjoin(temp_dir, "pred", "raw_ca.pdb"),
                     atom_name="CA",
                     res_name="GLY",
@@ -810,11 +822,11 @@ def main(args):
                 _build_protein_lm(
                     protein_seq_path,
                     prot_seq_embed_path,
-                    device=args.device,
+                    device=single_stage_device,
                     max_chain_length=1000,
                     lm_weights_dir=args.lm_weights_dir,
                 )
-                clear_cuda_cache(args.device, note="protein LM")
+                clear_cuda_cache(single_stage_device, note="protein LM")
                 end = time.time()
                 print("# Time = {:.4f}".format(end - start))
             else:
@@ -827,11 +839,11 @@ def main(args):
                     rna_seq_path,
                     dna_seq_path,
                     na_seq_embed_path,
-                    device=args.device,
+                    device=single_stage_device,
                     max_chain_length=1000,
                     lm_weights_dir=args.lm_weights_dir,
                 )
-                clear_cuda_cache(args.device, note="NA LM")
+                clear_cuda_cache(single_stage_device, note="NA LM")
                 end = time.time()
                 print("# Time = {:.4f}".format(end - start))
             else:
@@ -852,7 +864,7 @@ def main(args):
             inferlm_args.map = runtime_map_path
             inferlm_args.polymer = initial_polymer_path
             inferlm_args.model_dir = all_atom_weights_dir
-            inferlm_args.device = args.device
+            inferlm_args.device = multi_stage_device
             inferlm_args.crop_length = 200 if run_protein else 200
             inferlm_args.repeat_per_residue = 1
             inferlm_args.run_iters = 3
@@ -876,7 +888,7 @@ def main(args):
             inferlm_args.pass_prev_node = True
             inferlm_args.model_config = inferlm_v3x_model_config
             inferlm_v3x.main(inferlm_args)
-            clear_cuda_cache(args.device, note="inferlm_v3x")
+            clear_cuda_cache(multi_stage_device, note="inferlm_v3x")
             end = time.time()
             print("# Time = {:.4f}".format(end - start))
         else:
@@ -1028,7 +1040,7 @@ def main(args):
             fit_args.rigid_cutoff_score_early = -1.5
             fit_args.rigid_cutoff_score_late = -0.5
             fit_args.rigid_skip_short_residues = 50
-            fit_args.device = args.device
+            fit_args.device = single_stage_device
             fit_args.angle_step = 18.0
             fit_args.fgrid = 3.0
             fit_args.sgrid = 2.0
