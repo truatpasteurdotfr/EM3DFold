@@ -24,7 +24,7 @@ from em3dfold.utils.torch_utils import clear_cuda_cache, get_device_names
 EM_WEIGHTS_ENV_VAR = "EM_WEIGHTS_DIR"
 BUILD_CONTACT_LINES = (
     f"Version: {getattr(em3dfold, '__version__', 'unknown')}",
-    #"Authors: Tao Li <taoli98@hust.edu.cn>; Sheng-You Huang <huangsy@hust.edu.cn>",
+    "By Tao Li, Huang-lab, Huazhong University of Science and Technology",
 )
 
 
@@ -79,7 +79,7 @@ def add_args(parser):
     parser.add_argument(
         "--device",
         "--gpu",
-        help="Compute device. Use a single device such as '0' or 'cpu', or a comma-separated GPU list such as '0,1,2,3' for pred/denovo.",
+        help="Compute device. Use a single device such as '0' or 'cpu', or a comma-separated GPU list such as '0,1,2,3'",
         default="0",
     )
     parser.add_argument(

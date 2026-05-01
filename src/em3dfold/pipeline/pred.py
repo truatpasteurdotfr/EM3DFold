@@ -66,6 +66,62 @@ def _resolve_model_dir(model_dir, dir_script):
     return pjoin(dir_script, "..", "weights")
 
 
+def _gaussian_patch_weight(box_size, sigma=None, dtype=np.float32):
+    if sigma is None:
+        sigma = float(box_size) / 4.0
+    sigma = float(sigma)
+    if sigma <= 0.0:
+        raise ValueError(f"gaussian sigma must be positive, got {sigma}")
+
+    coords = np.arange(box_size, dtype=np.float32)
+    center = (float(box_size) - 1.0) / 2.0
+    zz, yy, xx = np.meshgrid(coords, coords, coords, indexing="ij")
+    dist2 = (zz - center) ** 2 + (yy - center) ** 2 + (xx - center) ** 2
+    weight = np.exp(-dist2 / (2.0 * sigma ** 2)).astype(dtype, copy=False)
+
+    weight_min = float(weight.min())
+    weight_max = float(weight.max())
+    if weight_max > weight_min:
+        weight = 1.0 + 2.0 * (weight - weight_min) / (weight_max - weight_min)
+    else:
+        weight = np.ones_like(weight, dtype=dtype)
+    return weight.astype(dtype, copy=False)
+
+
+def _map_batch_to_map_gaussian(
+    pred_map,
+    denominator,
+    positions,
+    batch,
+    box_size,
+    patch_weight,
+):
+    volume_shape = np.asarray(pred_map.shape[1:], dtype=np.int64)
+    patch_weight = np.asarray(patch_weight, dtype=pred_map.dtype)
+
+    for position, chunk in zip(positions, batch):
+        start = np.asarray(position, dtype=np.int64)
+        end = start + int(box_size)
+        dst_start = np.maximum(start, 0)
+        dst_end = np.minimum(end, volume_shape)
+        if np.any(dst_start >= dst_end):
+            continue
+
+        src_start = dst_start - start
+        src_end = src_start + (dst_end - dst_start)
+
+        dst_slices = tuple(slice(int(dst_start[i]), int(dst_end[i])) for i in range(3))
+        src_slices = tuple(slice(int(src_start[i]), int(src_end[i])) for i in range(3))
+        local_weight = patch_weight[src_slices]
+
+        pred_map[(slice(None),) + dst_slices] += (
+            chunk[(slice(None),) + src_slices] * local_weight[None, ...]
+        )
+        denominator[(slice(None),) + dst_slices] += local_weight[None, ...]
+
+    return pred_map, denominator
+
+
 class _BatchPrefetcher:
     _END = object()
 
@@ -129,6 +185,8 @@ def load_model_and_run_inference_on_map(model_file, map_file, **kwargs):
     batch_size = kwargs["batch_size"]
     devices = kwargs["devices"]
     scale = kwargs["scale"]
+    gaussian_weight = bool(kwargs.get("gaussian_weight", True))
+    gaussian_sigma = kwargs.get("gaussian_sigma", None)
 
     print(f"# Load map data from {map_file}")
     em_map, origin, nxyz, voxel_size = parse_map(map_file, ignorestart=False, apix=apix)
@@ -157,6 +215,16 @@ def load_model_and_run_inference_on_map(model_file, map_file, **kwargs):
 
     map_pred = np.zeros((n_classes,) + padded_map.shape, dtype=np.float32)
     denominator = np.zeros((n_classes,) + padded_map.shape, dtype=np.float32)
+    patch_weight = None
+    if gaussian_weight:
+        patch_weight = _gaussian_patch_weight(box_size, sigma=gaussian_sigma, dtype=np.float32)
+        print(
+            "# Using Gaussian patch fusion "
+            f"(sigma={float(gaussian_sigma) if gaussian_sigma is not None else box_size / 4.0:.4f}, "
+            f"weight_range={patch_weight.min():.4f}-{patch_weight.max():.4f})"
+        )
+    else:
+        print("# Using uniform patch fusion")
 
     print("# Start processing")
     generator = chunk_generator(scaled_map, box_size=box_size, stride=stride, pre_scaled=True)
@@ -203,7 +271,23 @@ def load_model_and_run_inference_on_map(model_file, map_file, **kwargs):
             )
             for output, mb in zip(meta_batch_out, meta_batches):
                 y_pred[np.asarray(mb, dtype=np.int32)] = output.detach().cpu().numpy()
-            map_pred, denominator = map_batch_to_map(map_pred, denominator, positions, y_pred, box_size)
+            if patch_weight is None:
+                map_pred, denominator = map_batch_to_map(
+                    map_pred,
+                    denominator,
+                    positions,
+                    y_pred,
+                    box_size,
+                )
+            else:
+                map_pred, denominator = _map_batch_to_map_gaussian(
+                    map_pred,
+                    denominator,
+                    positions,
+                    y_pred,
+                    box_size,
+                    patch_weight,
+                )
 
     map_pred = (map_pred / denominator.clip(min=1))[
         :,
@@ -226,7 +310,16 @@ data_params = {
 
 test_params = {
     "batch_size": 160,
+    "gaussian_weight": True,
+    "gaussian_sigma": None,
 }
+
+
+def _fusion_kwargs(test_params):
+    return {
+        "gaussian_weight": bool(test_params.get("gaussian_weight", True)),
+        "gaussian_sigma": test_params.get("gaussian_sigma", None),
+    }
 
 
 def inference_segmentation(dir_map, contour, dir_model, dir_out, data_params, test_params, devices):
@@ -243,6 +336,7 @@ def inference_segmentation(dir_map, contour, dir_model, dir_out, data_params, te
         batch_size=test_params["batch_size"],
         devices=devices,
         scale=1.0, # 100.0
+        **_fusion_kwargs(test_params),
     )
 
     map_pred = np.argmax(map_pred, axis=0)
@@ -285,6 +379,7 @@ def inference_nucleic_c4(dir_map, contour, dir_model, dir_out, data_params, test
         batch_size=test_params["batch_size"],
         devices=devices,
         scale=1.0,
+        **_fusion_kwargs(test_params),
     )
     mask = np.where(em_map <= contour, 0, 1).astype(np.int8)
     out = mask * map_pred[0]
@@ -306,6 +401,7 @@ def inference_nucleic_aa(dir_map, dir_model, dir_out, data_params, test_params, 
         batch_size=test_params["batch_size"],
         devices=devices,
         scale=1.0,
+        **_fusion_kwargs(test_params),
     )
 
     map_pred[[1, 2]] = map_pred[[2, 1]]
@@ -328,6 +424,7 @@ def inference_protein_ca(dir_map, contour, dir_model, dir_out, data_params, test
         batch_size=test_params["batch_size"],
         devices=devices,
         scale=1.0,
+        **_fusion_kwargs(test_params),
     )
 
     mask = np.where(em_map <= contour, 0, 1).astype(np.int8)
@@ -384,6 +481,8 @@ def main(args):
 
     if args.batchsize is not None:
         test_params["batch_size"] = args.batchsize
+    test_params["gaussian_weight"] = bool(getattr(args, "gaussian_weight", True))
+    test_params["gaussian_sigma"] = getattr(args, "gaussian_sigma", None)
 
     devices = get_device_names(args.device)
     print(f"# Parsed compute devices = {devices}")
@@ -469,6 +568,18 @@ def add_args(parser):
         default=None,
     )
     parser.add_argument("--stride", "-s", type=int, help="Stride for splitting chunks", default=16)
+    parser.add_argument(
+        "--gaussian-sigma",
+        type=float,
+        default=None,
+        help="Sigma for Gaussian patch fusion; defaults to box_size / 4",
+    )
+    parser.add_argument(
+        "--gaussian-weight",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use Gaussian-weighted patch fusion; disable with --no-gaussian-weight",
+    )
     parser.add_argument("--protein", action="store_true", help="Predict protein CA map (ca.mrc) and backbone map (backbone.mrc)")
     parser.add_argument("--nucleic", action="store_true", help="Predict nucleic maps (c4.mrc and logits.npz)")
     return parser
