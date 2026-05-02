@@ -483,6 +483,7 @@ def main(args):
         test_params["batch_size"] = args.batchsize
     test_params["gaussian_weight"] = bool(getattr(args, "gaussian_weight", True))
     test_params["gaussian_sigma"] = getattr(args, "gaussian_sigma", None)
+    print(f"# Use gaussian weight: {test_params['gaussian_weight']}")
 
     devices = get_device_names(args.device)
     print(f"# Parsed compute devices = {devices}")
