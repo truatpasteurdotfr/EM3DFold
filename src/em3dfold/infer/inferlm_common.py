@@ -135,6 +135,64 @@ def prepare_common_args(parser):
         action="store_false",
         help="Do not pass previous recycle prev_node into the next outer recycle round",
     )
+    parser.add_argument(
+        "--extra-protein-trace-backend",
+        type=str,
+        default="none",
+        choices=["none", "beam"],
+        help="Optionally run an extra protein-only tracing backend after the default postprocess",
+    )
+    parser.add_argument(
+        "--beam-width-protein",
+        type=int,
+        default=12,
+        help="Beam width for the experimental protein-only beam tracing backend",
+    )
+    parser.add_argument(
+        "--trace-max-candidates",
+        type=int,
+        default=5000,
+        help="Maximum number of protein beam candidates to keep in the experimental branch",
+    )
+    parser.add_argument(
+        "--cn-radius-protein",
+        type=float,
+        default=2.1,
+        help="Primary C-N tracing radius for the experimental protein beam backend",
+    )
+    parser.add_argument(
+        "--ca-rescue-radius-protein",
+        type=float,
+        default=4.5,
+        help="CA-CA rescue radius for the experimental protein beam backend",
+    )
+    parser.set_defaults(beam_protein_trace_dump_candidates=True)
+    parser.add_argument(
+        "--no-beam-protein-trace-dump-candidates",
+        dest="beam_protein_trace_dump_candidates",
+        action="store_false",
+        help="Disable raw candidate JSON dumping in the experimental protein beam branch",
+    )
+    parser.set_defaults(beam_protein_trace_hmm_rerank=False)
+    parser.add_argument(
+        "--beam-protein-trace-hmm-rerank",
+        dest="beam_protein_trace_hmm_rerank",
+        action="store_true",
+        help="Attach HMM annotations and rerank candidates in the experimental protein beam branch",
+    )
+    parser.set_defaults(beam_protein_trace_iterative_refine=False)
+    parser.add_argument(
+        "--beam-protein-trace-iterative-refine",
+        dest="beam_protein_trace_iterative_refine",
+        action="store_true",
+        help="Freeze high-confidence anchor candidates and rerun protein beam tracing on remaining nodes",
+    )
+    parser.add_argument(
+        "--beam-protein-trace-max-refine-rounds",
+        type=int,
+        default=3,
+        help="Maximum number of iterative refine rounds for the experimental protein beam branch",
+    )
     return parser
 
 
@@ -268,7 +326,10 @@ def _write_merged_best_so_far_output(output_path, protein_path=None, na_path=Non
 
 
 def run_inference_loop(args, model_class, model_args, run_inference_fn):
-    from em3dfold.infer.denovo import final_results_align_to_sequence
+    from em3dfold.infer.denovo import (
+        final_results_align_to_sequence,
+        final_results_align_to_sequence_beam_protein,
+    )
     from em3dfold.infer.gnn_inference_utils import (
         argmin_random,
         collate_nn_results,
@@ -510,6 +571,45 @@ def run_inference_loop(args, model_class, model_args, run_inference_fn):
         fallback_to_predicted_na_types=getattr(args, "fallback_to_predicted_na_types", True),
         na_aa_logits_data=postprocess_na_aa_logits_data,
     )
+    if getattr(args, "extra_protein_trace_backend", "none") == "beam":
+        beam_output_info = final_results_align_to_sequence_beam_protein(
+            final_results,
+            args.protein_seq,
+            args.dna_seq,
+            args.rna_seq,
+            args.output_dir,
+            flag_prune_and_connect_chains=args.prune,
+            protein_radius_threshold=args.protein_radius_threshold,
+            na_radius_threshold=args.na_radius_threshold,
+            min_na_chain_len=getattr(args, "min_na_chain_len", 1),
+            fallback_to_predicted_na_types=getattr(
+                args, "fallback_to_predicted_na_types", True
+            ),
+            na_aa_logits_data=postprocess_na_aa_logits_data,
+            beam_width_protein=getattr(args, "beam_width_protein", 16),
+            trace_max_candidates=getattr(args, "trace_max_candidates", 5000),
+            cn_radius_protein=getattr(args, "cn_radius_protein", 2.1),
+            ca_rescue_radius_protein=getattr(args, "ca_rescue_radius_protein", 4.8),
+            beam_protein_trace_dump_candidates=getattr(
+                args, "beam_protein_trace_dump_candidates", True
+            ),
+            beam_protein_trace_hmm_rerank=getattr(
+                args, "beam_protein_trace_hmm_rerank", False
+            ),
+            beam_protein_trace_iterative_refine=getattr(
+                args, "beam_protein_trace_iterative_refine", False
+            ),
+            beam_protein_trace_max_refine_rounds=getattr(
+                args, "beam_protein_trace_max_refine_rounds", 3
+            ),
+        )
+        output_info["beam_protein_output_info"] = beam_output_info
+        if beam_output_info.get("beam_summary_json") is not None:
+            print(
+                "# Experimental protein beam summary written to {}".format(
+                    beam_output_info["beam_summary_json"]
+                )
+            )
     clear_cuda_cache(args.device, note="inferlm postprocess")
     print("# Done")
     return output_info
