@@ -294,6 +294,7 @@ class SequenceAttention(nn.Module):
             gate_module=self.gate_prot,
             back_module=self.back_prot,
         )
+        prot_features = prot_features.to(dtype=new_features_all.dtype)
         new_features_all[prot_mask] = prot_features
 
         na_features = self._attend_subset(
@@ -309,6 +310,7 @@ class SequenceAttention(nn.Module):
             gate_module=self.gate_na,
             back_module=self.back_na,
         )
+        na_features = na_features.to(dtype=new_features_all.dtype)
         new_features_all[na_mask] = na_features
 
         return math.sqrt(2) * node + new_features_all

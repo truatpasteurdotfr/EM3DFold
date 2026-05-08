@@ -93,9 +93,9 @@ class Model(V3XModel):
                     proxy_prot_atom_names.index("CB"),
                 ],
                 [
-                    proxy_na_atom_names.index("O3'"),
-                    proxy_na_atom_names.index("C4'"),
                     proxy_na_atom_names.index("P"),
+                    proxy_na_atom_names.index("C4'"),
+                    proxy_na_atom_names.index("O3'"),
                     proxy_na_atom_names.index("C1'"),
                     proxy_na_atom_names.index("N9"),
                 ],
