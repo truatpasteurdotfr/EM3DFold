@@ -131,7 +131,14 @@ class WMSA(nn.Module):
         self.linear = nn.Linear(self.input_dim, self.output_dim)
 
         trunc_normal_(self.relative_position_params, std=.02)
-        self.relative_position_params = torch.nn.Parameter(self.relative_position_params.view(2*window_size-1, 2*window_size-1, 2*window_size-1, self.n_heads).transpose(2,3).transpose(1,2).transpose(0,1))
+        self.relative_position_params = torch.nn.Parameter(
+            self.relative_position_params
+            .view(2 * window_size - 1, 2 * window_size - 1, 2 * window_size - 1, self.n_heads)
+            .transpose(2, 3)
+            .transpose(1, 2)
+            .transpose(0, 1)
+            .reshape(self.n_heads, 2 * window_size - 1, 2 * window_size - 1, 2 * window_size - 1)
+        )
 
         # jhe modification
         cord = torch.tensor(np.array([[i, j, k] for i in range(self.window_size) for j in range(self.window_size) for k in range(self.window_size)]))

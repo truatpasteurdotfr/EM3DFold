@@ -224,6 +224,17 @@ class SequenceAttention(nn.Module):
         na_seq_mask=None,
         **kwargs,
     ):
+        if (not torch.is_grad_enabled()) or (not node.requires_grad):
+            return self._intern_forward(
+                node=node,
+                prot_mask=prot_mask,
+                batch=batch,
+                attention_batch_size=attention_batch_size,
+                prot_seq_emb=prot_seq_emb,
+                prot_seq_mask=prot_seq_mask,
+                na_seq_emb=na_seq_emb,
+                na_seq_mask=na_seq_mask,
+            )
         new_forward = partial(
             self._intern_forward,
             prot_mask=prot_mask,
@@ -237,6 +248,7 @@ class SequenceAttention(nn.Module):
         return torch.utils.checkpoint.checkpoint(
             new_forward,
             node,
+            use_reentrant=False,
             preserve_rng_state=False,
         )
 

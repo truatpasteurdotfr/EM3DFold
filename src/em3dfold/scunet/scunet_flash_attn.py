@@ -116,6 +116,12 @@ class WMSA(nn.Module):
             .transpose(2, 3)
             .transpose(1, 2)
             .transpose(0, 1)
+            .reshape(
+                self.n_heads,
+                2 * window_size - 1,
+                2 * window_size - 1,
+                2 * window_size - 1,
+            )
         )
 
         cord = torch.tensor(

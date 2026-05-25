@@ -172,7 +172,9 @@ class TrackBlock(nn.Module):
         edge_index=None,
         use_checkpoint=False,
     ):
-        if use_checkpoint:
+        if use_checkpoint and torch.is_grad_enabled() and (
+            node.requires_grad or edge.requires_grad or affines.requires_grad
+        ):
             new_forward = lambda node, edge, affines: self.forward_normal(
                 node,
                 edge,
@@ -185,6 +187,8 @@ class TrackBlock(nn.Module):
                 node,
                 edge,
                 affines,
+                use_reentrant=False,
+                preserve_rng_state=False,
             )
         else:
             return self.forward_normal(
@@ -287,4 +291,3 @@ if __name__ == '__main__':
         print("{:.4f}".format(t1 - t0))
 
         time.sleep(2)
-
