@@ -1,5 +1,5 @@
 import sys
-sys.path.insert(1, "/data_gu02/taoli/em3dfold/train_tta/empoly")
+sys.path.insert(1, "/data_gu03/taoli/em3dfold/train_tta/empoly")
 
 import torch
 from torch import nn
@@ -296,4 +296,3 @@ if __name__ == '__main__':
         print(edge.shape)
 
         time.sleep(1)
-
