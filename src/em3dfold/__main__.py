@@ -51,7 +51,8 @@ def main():
     warnings.filterwarnings("ignore")
 
     modules = {
-        "build": "em3dfold.build",
+        "build": "em3dfold.build_dual",
+        "build-legacy": "em3dfold.build",
         "assemble": "em3dfold.pipeline.assemble",
         "eval": "em3dfold.pipeline.eval",
         "pred": "em3dfold.pipeline.pred",
@@ -131,16 +132,19 @@ def main():
     if runtime_log_dir is not None:
         module_key = getattr(args, "_module_key", "main")
         stdout_progress_logger_name = f"em3dfold.{module_key}.progress"
-        if module_key == "build":
+        if module_key in {"build", "build-legacy"}:
             stdout_progress_logger_name = (
                 "em3dfold.build.progress",
                 "em3dfold.pred.progress",
                 "em3dfold.infer.progress",
             )
+            progress_logger_name = "em3dfold.build.progress"
+        else:
+            progress_logger_name = f"em3dfold.{module_key}.progress"
         configure_runtime_logging(
             runtime_log_dir,
             package_prefixes=("em3dfold", "em3dfit"),
-            progress_logger_name=f"em3dfold.{module_key}.progress",
+            progress_logger_name=progress_logger_name,
             stdout_progress_logger_name=stdout_progress_logger_name,
             verbose=bool(getattr(args, "verbose", False)),
             excluded_prefixes=("em3dfold.rinalmo", "em3dfold.bin.src"),

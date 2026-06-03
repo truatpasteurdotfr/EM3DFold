@@ -1,6 +1,12 @@
 import os
+import time
 import numpy as np
 from scipy.spatial import cKDTree
+
+try:
+    from numba import njit
+except Exception:
+    njit = None
 
 from em3dfold.pipeline import meanshift
 from em3dfold.utils.cryo_utils import parse_map, enlarge_grid
@@ -14,6 +20,9 @@ def write_p(
     chain_id="A",
     element=None,
 ):
+    output_dir = os.path.dirname(filename)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
     if dens is None:
         dens = np.array([1.0] * len(coords))
     atom_name = atom_name.strip()
@@ -48,49 +57,127 @@ def get_lattice_meshgrid_np(shape, no_shift=False):
     mesh = np.stack(np.meshgrid(linspace, linspace, linspace, indexing="ij"), axis=-1,)
     return mesh
 
+def _pack_neighborhoods(neighborhoods):
+    lengths = np.fromiter((len(neigh) for neigh in neighborhoods), dtype=np.int32, count=len(neighborhoods))
+    offsets = np.empty((len(lengths) + 1,), dtype=np.int32)
+    offsets[0] = 0
+    np.cumsum(lengths, out=offsets[1:])
+    if offsets[-1] == 0:
+        flat = np.zeros((0,), dtype=np.int32)
+    else:
+        flat = np.concatenate([np.asarray(neigh, dtype=np.int32) for neigh in neighborhoods], axis=0)
+    return offsets, flat
+
+
+if njit is not None:
+    @njit(cache=True)
+    def _prune_round_numba(points, probs, offsets, flat_neighbors):
+        new_points = points.copy()
+        updated_probs = probs.copy()
+
+        for idx in range(len(offsets) - 1):
+            start = offsets[idx]
+            end = offsets[idx + 1]
+            if end - start <= 1:
+                continue
+
+            prob_sum = 0.0
+            keep_idx = -1
+            keep_prob = -1.0
+            x = 0.0
+            y = 0.0
+            z = 0.0
+
+            for j in range(start, end):
+                neighbor_idx = flat_neighbors[j]
+                prob = updated_probs[neighbor_idx]
+                prob_sum += prob
+                if prob > keep_prob:
+                    keep_prob = prob
+                    keep_idx = neighbor_idx
+                x += prob * points[neighbor_idx, 0]
+                y += prob * points[neighbor_idx, 1]
+                z += prob * points[neighbor_idx, 2]
+
+            if prob_sum <= 0.0:
+                continue
+
+            for j in range(start, end):
+                updated_probs[flat_neighbors[j]] = 0.0
+            updated_probs[keep_idx] = prob_sum
+            new_points[keep_idx, 0] = x / prob_sum
+            new_points[keep_idx, 1] = y / prob_sum
+            new_points[keep_idx, 2] = z / prob_sum
+
+        keep_mask = updated_probs > 0.0
+        return new_points[keep_mask], updated_probs[keep_mask]
+
+
+def _prune_round_python(points, probs, offsets, flat_neighbors):
+    new_points = np.copy(points)
+    updated_probs = np.copy(probs)
+    for idx in range(len(offsets) - 1):
+        start = offsets[idx]
+        end = offsets[idx + 1]
+        if end - start <= 1:
+            continue
+        selection = flat_neighbors[start:end]
+        selected_probs = updated_probs[selection]
+        prob_sum = np.sum(selected_probs)
+        if prob_sum <= 0:
+            continue
+        keep_local_idx = int(np.argmax(selected_probs))
+        keep_idx = int(selection[keep_local_idx])
+        new_points[keep_idx] = (
+            np.sum(selected_probs[:, None] * points[selection], axis=0)
+            / prob_sum
+        )
+        updated_probs[selection] = 0
+        updated_probs[keep_idx] = prob_sum
+
+    keep_mask = updated_probs > 0
+    return new_points[keep_mask], updated_probs[keep_mask]
+
+
 def grid_to_points(
-    grid, threshold, neighbour_distance_threshold, prune_distance=1.1,
+    grid,
+    threshold,
+    neighbour_distance_threshold,
+    prune_distance=1.1,
+    return_timing=False,
 ):
+    timing = {}
     lattice = np.flip(get_lattice_meshgrid_np(grid.shape[-1], no_shift=True), -1)
 
-    output_points_before_pruning = np.copy(lattice[grid > threshold, :].reshape(-1, 3))
+    t_stage = time.perf_counter()
+    selected = grid > threshold
+    output_points_before_pruning = np.copy(lattice[selected, :].reshape(-1, 3))
 
-    points = lattice[grid > threshold, :].reshape(-1, 3)
-    probs = grid[grid > threshold]
+    points = lattice[selected, :].reshape(-1, 3)
+    probs = grid[selected]
+    timing["g2p_grid_select_points"] = time.perf_counter() - t_stage
 
+    t_stage = time.perf_counter()
     for _ in range(3):
-        kdtree = cKDTree(np.copy(points))
-        n = 0
+        kdtree = cKDTree(points)
+        neighborhoods = kdtree.query_ball_tree(kdtree, r=prune_distance)
+        offsets, flat_neighbors = _pack_neighborhoods(neighborhoods)
+        if njit is not None:
+            points, probs = _prune_round_numba(points, probs, offsets, flat_neighbors)
+        else:
+            points, probs = _prune_round_python(points, probs, offsets, flat_neighbors)
+    timing["g2p_grid_prune_rounds"] = time.perf_counter() - t_stage
 
-        new_points = np.copy(points)
-        for p in points:
-            neighbours = kdtree.query_ball_point(p, prune_distance)
-            selection = list(neighbours)
-            if len(neighbours) > 1 and np.sum(probs[selection]) > 0:
-                keep_idx = np.argmax(probs[selection])
-                prob_sum = np.sum(probs[selection])
-
-                new_points[selection[keep_idx]] = (
-                    np.sum(probs[selection][..., None] * points[selection], axis=0)
-                    / prob_sum
-                )
-                probs[selection] = 0
-                probs[selection[keep_idx]] = prob_sum
-
-            n += 1
-
-        points = new_points[probs > 0].reshape(-1, 3)
-        probs = probs[probs > 0]
-
-    kdtree = cKDTree(np.copy(points))
-    for point_idx, point in enumerate(points):
-        d, _ = kdtree.query(point, 2)
-        if d[1] > neighbour_distance_threshold:
-            points[point_idx] = np.nan
-
-    points = points[~np.isnan(points).any(axis=-1)].reshape(-1, 3)
+    t_stage = time.perf_counter()
+    if len(points) > 0:
+        kdtree = cKDTree(points)
+        distances, _ = kdtree.query(points, k=2)
+        points = points[distances[:, 1] <= neighbour_distance_threshold].reshape(-1, 3)
+    timing["g2p_grid_neighbor_filter"] = time.perf_counter() - t_stage
 
     output_points = points
+    if return_timing:
+        return output_points, output_points_before_pruning, timing
     return output_points, output_points_before_pruning
 
 
@@ -121,6 +208,86 @@ def merge(coord, dens, d=1.0):
         n_round += 1
 
     return coord[kept], dens[kept]
+
+
+def filter_connected_components(
+    coords,
+    dens,
+    link_distance,
+    min_component_size=0,
+    min_fraction_largest=0.0,
+):
+    coords = np.asarray(coords, dtype=np.float32)
+    dens = np.asarray(dens, dtype=np.float32)
+    if len(coords) == 0:
+        return coords, dens, {
+            "num_components": 0,
+            "largest_component": 0,
+            "kept_components": 0,
+            "points_before": 0,
+            "points_after": 0,
+            "effective_min_size": 0,
+        }
+
+    if link_distance <= 0.0 or (min_component_size <= 0 and min_fraction_largest <= 0.0):
+        return coords, dens, {
+            "num_components": 1,
+            "largest_component": int(len(coords)),
+            "kept_components": 1,
+            "points_before": int(len(coords)),
+            "points_after": int(len(coords)),
+            "effective_min_size": 0,
+        }
+
+    tree = cKDTree(coords)
+    neighborhoods = tree.query_ball_tree(tree, r=float(link_distance))
+    visited = np.zeros((len(coords),), dtype=bool)
+    components = []
+
+    for start_idx in range(len(coords)):
+        if visited[start_idx]:
+            continue
+        stack = [start_idx]
+        visited[start_idx] = True
+        component = []
+        while stack:
+            idx = stack.pop()
+            component.append(idx)
+            for neighbor_idx in neighborhoods[idx]:
+                if not visited[neighbor_idx]:
+                    visited[neighbor_idx] = True
+                    stack.append(neighbor_idx)
+        components.append(np.asarray(component, dtype=np.int32))
+
+    component_sizes = np.asarray([len(component) for component in components], dtype=np.int32)
+    largest_component = int(component_sizes.max()) if len(component_sizes) > 0 else 0
+    min_fraction_size = int(np.ceil(float(largest_component) * float(min_fraction_largest))) if largest_component > 0 and min_fraction_largest > 0.0 else 0
+    effective_min_size = max(int(min_component_size), int(min_fraction_size))
+
+    keep_mask = np.zeros((len(coords),), dtype=bool)
+    kept_components = 0
+    for component in components:
+        if len(component) < effective_min_size:
+            continue
+        keep_mask[component] = True
+        kept_components += 1
+
+    if kept_components == 0:
+        keep_mask[:] = True
+        kept_components = len(components)
+        effective_min_size = 0
+
+    filtered_coords = coords[keep_mask]
+    filtered_dens = dens[keep_mask]
+    stats = {
+        "num_components": int(len(components)),
+        "largest_component": int(largest_component),
+        "kept_components": int(kept_components),
+        "points_before": int(len(coords)),
+        "points_after": int(len(filtered_coords)),
+        "effective_min_size": int(effective_min_size),
+    }
+    return filtered_coords, filtered_dens, stats
 
 
 def _coords_to_grid_xyz(coords, origin, voxel_size):
@@ -309,6 +476,8 @@ def run_getp(
 
 
 def main(args):
+    stage_times = {}
+    t_main_start = time.perf_counter()
     g2p_coords = np.zeros((0, 3), dtype=np.float32)
     g2p_dens = np.zeros((0,), dtype=np.float32)
     g2p_map = None
@@ -316,21 +485,48 @@ def main(args):
     g2p_vsize = None
 
     if args.run_g2p:
+        t_stage = time.perf_counter()
         # Run grid to points
+        t_sub = time.perf_counter()
         data, origin, nxyz, vsize = parse_map(args.map, False, None)
+        stage_times["g2p_parse_map"] = time.perf_counter() - t_sub
+        t_sub = time.perf_counter()
         data = enlarge_grid(data)
+        stage_times["g2p_enlarge_grid"] = time.perf_counter() - t_sub
 
+        t_sub = time.perf_counter()
         maximum = np.percentile(data, 99.999)
         data = np.clip(data, 0.0, maximum)
         data = data / (data.max() + 1e-6)
+        stage_times["g2p_normalize"] = time.perf_counter() - t_sub
 
-        points, _ = grid_to_points(data, args.ratio, 6.0, prune_distance=1.5)
+        t_sub = time.perf_counter()
+        points, _, grid_to_points_timing = grid_to_points(
+            data,
+            args.ratio,
+            6.0,
+            prune_distance=1.5,
+            return_timing=True,
+        )
+        stage_times["g2p_grid_to_points"] = time.perf_counter() - t_sub
+        stage_times.update(grid_to_points_timing)
+
+        t_sub = time.perf_counter()
         g2p_coords = points + origin
         g2p_dens = sample_density_nearest(data, g2p_coords, origin, vsize)
+        stage_times["g2p_sample_density"] = time.perf_counter() - t_sub
         g2p_map = data
         g2p_origin = origin
         g2p_vsize = vsize
+        stage_times["g2p_seed"] = time.perf_counter() - t_stage
         print("# Done g2p n = {}".format(len(points)))
+        print("# Stage time g2p_normalize = {:.4f}s".format(stage_times["g2p_normalize"]))
+        print("# Stage time g2p_grid_select_points = {:.4f}s".format(stage_times["g2p_grid_select_points"]))
+        print("# Stage time g2p_grid_prune_rounds = {:.4f}s".format(stage_times["g2p_grid_prune_rounds"]))
+        print("# Stage time g2p_grid_neighbor_filter = {:.4f}s".format(stage_times["g2p_grid_neighbor_filter"]))
+        print("# Stage time g2p_grid_to_points = {:.4f}s".format(stage_times["g2p_grid_to_points"]))
+        print("# Stage time g2p_sample_density = {:.4f}s".format(stage_times["g2p_sample_density"]))
+        print("# Stage time g2p_seed = {:.4f}s".format(stage_times["g2p_seed"]))
 
     # Run getp
     if args.run_getp:
@@ -341,6 +537,7 @@ def main(args):
             init_coords = None
             init_pdb = args.p
 
+        t_stage = time.perf_counter()
         coords, dens = run_getp(
             map_dir=args.map,
             out_dir=None,
@@ -357,12 +554,19 @@ def main(args):
             verbose=True,
         )
 
+        stage_times["getp_meanshift"] = time.perf_counter() - t_stage
+        print("# Stage time getp_meanshift = {:.4f}s".format(stage_times["getp_meanshift"]))
+
         # Merge again
         print("# Before merging n = {}".format(len(coords)))
+        t_stage = time.perf_counter()
         coords, dens = merge(coords, dens, args.dmerge)
+        stage_times["merge_primary"] = time.perf_counter() - t_stage
         print("# After  merging n = {}".format(len(coords)))
+        print("# Stage time merge_primary = {:.4f}s".format(stage_times["merge_primary"]))
 
         if args.run_g2p and args.fuse_g2p and len(g2p_coords) > 0:
+            t_stage = time.perf_counter()
             supplemental_coords, supplemental_dens = select_supplemental_g2p_points(
                 getp_coords=coords,
                 g2p_coords=g2p_coords,
@@ -371,9 +575,12 @@ def main(args):
                 supplement_merge_distance=args.g2p_supplement_merge_distance,
                 max_points=args.g2p_max_supplements,
             )
+            stage_times["g2p_select_supplements"] = time.perf_counter() - t_stage
             print("# Candidate g2p supplements n = {}".format(len(supplemental_coords)))
+            print("# Stage time g2p_select_supplements = {:.4f}s".format(stage_times["g2p_select_supplements"]))
 
             if len(supplemental_coords) > 0 and args.g2p_refine_radius > 0.0:
+                t_stage = time.perf_counter()
                 supplemental_coords = refine_points_to_density_centroid(
                     supplemental_coords,
                     g2p_map,
@@ -388,15 +595,46 @@ def main(args):
                     g2p_origin,
                     g2p_vsize,
                 )
+                stage_times["g2p_refine_supplements"] = time.perf_counter() - t_stage
+                print("# Stage time g2p_refine_supplements = {:.4f}s".format(stage_times["g2p_refine_supplements"]))
 
             if len(supplemental_coords) > 0:
                 coords = np.concatenate([coords, supplemental_coords], axis=0)
                 dens = np.concatenate([dens, supplemental_dens], axis=0)
                 print("# After adding g2p supplements n = {}".format(len(coords)))
+                t_stage = time.perf_counter()
                 coords, dens = merge(coords, dens, args.dmerge)
+                stage_times["merge_with_supplements"] = time.perf_counter() - t_stage
                 print("# After final merge with supplements n = {}".format(len(coords)))
+                print("# Stage time merge_with_supplements = {:.4f}s".format(stage_times["merge_with_supplements"]))
+
+        t_stage = time.perf_counter()
+        coords, dens, cc_stats = filter_connected_components(
+            coords,
+            dens,
+            link_distance=getattr(args, "component_link_distance", 0.0),
+            min_component_size=getattr(args, "component_min_size", 0),
+            min_fraction_largest=getattr(args, "component_min_fraction_largest", 0.0),
+        )
+        stage_times["connected_component_filter"] = time.perf_counter() - t_stage
+        print("# Stage time connected_component_filter = {:.4f}s".format(stage_times["connected_component_filter"]))
+        if getattr(args, "component_link_distance", 0.0) > 0.0 and (
+            getattr(args, "component_min_size", 0) > 0
+            or getattr(args, "component_min_fraction_largest", 0.0) > 0.0
+        ):
+            print(
+                "# Connected-component filter: components={} largest={} kept={} min_size={} points={} -> {}".format(
+                    cc_stats["num_components"],
+                    cc_stats["largest_component"],
+                    cc_stats["kept_components"],
+                    cc_stats["effective_min_size"],
+                    cc_stats["points_before"],
+                    cc_stats["points_after"],
+                )
+            )
 
         final_dir = os.path.join(args.output, "merged.pdb")
+        t_stage = time.perf_counter()
         write_p(
             final_dir,
             coords, dens,
@@ -405,7 +643,33 @@ def main(args):
             chain_id=args.chain_id,
             element=args.element,
         )
+        stage_times["write_pdb"] = time.perf_counter() - t_stage
         print("# Final coords write to {}".format(final_dir))
+        print("# Stage time write_pdb = {:.4f}s".format(stage_times["write_pdb"]))
+
+    stage_times["total"] = time.perf_counter() - t_main_start
+    print("# Stage timing summary")
+    for key in [
+        "g2p_parse_map",
+        "g2p_enlarge_grid",
+        "g2p_normalize",
+        "g2p_grid_select_points",
+        "g2p_grid_prune_rounds",
+        "g2p_grid_neighbor_filter",
+        "g2p_grid_to_points",
+        "g2p_sample_density",
+        "g2p_seed",
+        "getp_meanshift",
+        "merge_primary",
+        "g2p_select_supplements",
+        "g2p_refine_supplements",
+        "merge_with_supplements",
+        "connected_component_filter",
+        "write_pdb",
+        "total",
+    ]:
+        if key in stage_times:
+            print("#   {:28s} {:.4f}s".format(key, stage_times[key]))
 
 def add_args(parser):
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -462,6 +726,24 @@ def add_args(parser):
         type=int,
         default=None,
         help="Optional cap on the number of retained g2p supplement points",
+    )
+    parser.add_argument(
+        "--component-link-distance",
+        type=float,
+        default=0.0,
+        help="Graph edge distance for connected-component filtering; disabled when <= 0",
+    )
+    parser.add_argument(
+        "--component-min-size",
+        type=int,
+        default=0,
+        help="Drop connected components with fewer than this many points; disabled when <= 0",
+    )
+    parser.add_argument(
+        "--component-min-fraction-largest",
+        type=float,
+        default=0.0,
+        help="Drop connected components smaller than this fraction of the largest component; disabled when <= 0",
     )
     parser.add_argument("--atom-name", default="CA", help="Atom name used when writing output PDB points")
     parser.add_argument("--res-name", default="GLY", help="Residue name used when writing output PDB points")
