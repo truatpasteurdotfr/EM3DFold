@@ -58,14 +58,25 @@ def get_lattice_meshgrid_np(shape, no_shift=False):
     return mesh
 
 def _pack_neighborhoods(neighborhoods):
-    lengths = np.fromiter((len(neigh) for neigh in neighborhoods), dtype=np.int32, count=len(neighborhoods))
-    offsets = np.empty((len(lengths) + 1,), dtype=np.int32)
+    n = len(neighborhoods)
+    lengths = np.empty((n,), dtype=np.int32)
+    total = 0
+    for i, neigh in enumerate(neighborhoods):
+        neigh_len = len(neigh)
+        lengths[i] = neigh_len
+        total += neigh_len
+
+    offsets = np.empty((n + 1,), dtype=np.int32)
     offsets[0] = 0
     np.cumsum(lengths, out=offsets[1:])
-    if offsets[-1] == 0:
-        flat = np.zeros((0,), dtype=np.int32)
-    else:
-        flat = np.concatenate([np.asarray(neigh, dtype=np.int32) for neigh in neighborhoods], axis=0)
+
+    flat = np.empty((total,), dtype=np.int32)
+    cursor = 0
+    for neigh in neighborhoods:
+        neigh_len = len(neigh)
+        if neigh_len > 0:
+            flat[cursor:cursor + neigh_len] = neigh
+            cursor += neigh_len
     return offsets, flat
 
 
@@ -139,6 +150,75 @@ def _prune_round_python(points, probs, offsets, flat_neighbors):
     return new_points[keep_mask], updated_probs[keep_mask]
 
 
+if njit is not None:
+    @njit(cache=True)
+    def _merge_keep_mask_numba(sorted_indices, offsets, flat_neighbors, n_points):
+        kept = np.ones((n_points,), dtype=np.bool_)
+        for order_idx in range(sorted_indices.shape[0]):
+            point_idx = sorted_indices[order_idx]
+            if not kept[point_idx]:
+                continue
+            start = offsets[point_idx]
+            end = offsets[point_idx + 1]
+            for j in range(start, end):
+                neighbor_idx = flat_neighbors[j]
+                if neighbor_idx != point_idx:
+                    kept[neighbor_idx] = False
+        return kept
+
+
+    @njit(cache=True)
+    def _greedy_select_indices_numba(order, offsets, flat_neighbors, n_points, max_points):
+        suppressed = np.zeros((n_points,), dtype=np.bool_)
+        selected = np.empty((order.shape[0],), dtype=np.int32)
+        count = 0
+
+        for order_idx in range(order.shape[0]):
+            point_idx = order[order_idx]
+            if suppressed[point_idx]:
+                continue
+
+            selected[count] = point_idx
+            count += 1
+
+            start = offsets[point_idx]
+            end = offsets[point_idx + 1]
+            for j in range(start, end):
+                suppressed[flat_neighbors[j]] = True
+
+            if max_points >= 0 and count >= max_points:
+                break
+
+        return selected[:count]
+
+
+def _merge_keep_mask_python(sorted_indices, offsets, flat_neighbors, n_points):
+    kept = np.ones((n_points,), dtype=bool)
+    for point_idx in sorted_indices:
+        if not kept[point_idx]:
+            continue
+        start = offsets[point_idx]
+        end = offsets[point_idx + 1]
+        neighbors = flat_neighbors[start:end]
+        kept[neighbors[neighbors != point_idx]] = False
+    return kept
+
+
+def _greedy_select_indices_python(order, offsets, flat_neighbors, n_points, max_points):
+    suppressed = np.zeros((n_points,), dtype=bool)
+    selected_indices = []
+    for point_idx in order:
+        if suppressed[point_idx]:
+            continue
+        selected_indices.append(int(point_idx))
+        start = offsets[point_idx]
+        end = offsets[point_idx + 1]
+        suppressed[flat_neighbors[start:end]] = True
+        if max_points >= 0 and len(selected_indices) >= max_points:
+            break
+    return np.asarray(selected_indices, dtype=np.int32)
+
+
 def grid_to_points(
     grid,
     threshold,
@@ -188,24 +268,15 @@ def merge(coord, dens, d=1.0):
     if n == 0:
         return
 
-    # construct tree
     tree = cKDTree(coord)
+    neighborhoods = tree.query_ball_tree(tree, r=d)
+    offsets, flat_neighbors = _pack_neighborhoods(neighborhoods)
 
-    sorted_indices = np.argsort(dens)[::-1]
-    kept = np.ones(n, dtype=bool)
-
-    n_round = 0
-    for i in sorted_indices:
-        if not kept[i]:
-            continue
-
-        neighbors = tree.query_ball_point([coord[i]], r=d)[0]
-        neighbors = np.asarray(neighbors).astype(np.int32)
-        neighbors = neighbors[neighbors != i]
-
-        kept[neighbors] = False
-
-        n_round += 1
+    sorted_indices = np.argsort(dens)[::-1].astype(np.int32)
+    if njit is not None:
+        kept = _merge_keep_mask_numba(sorted_indices, offsets, flat_neighbors, n)
+    else:
+        kept = _merge_keep_mask_python(sorted_indices, offsets, flat_neighbors, n)
 
     return coord[kept], dens[kept]
 
@@ -316,25 +387,89 @@ def sample_density_nearest(grid, coords, origin, voxel_size):
     return sampled
 
 
-def refine_points_to_density_centroid(
+if njit is not None:
+    @njit(cache=True)
+    def _refine_points_to_density_centroid_numba(
+        coords,
+        grid,
+        origin,
+        voxel_size,
+        nxyz,
+        radius_grid,
+        radius,
+        n_iter,
+    ):
+        refined = coords.copy()
+        radius_sq = radius * radius
+
+        for _ in range(n_iter):
+            for i in range(refined.shape[0]):
+                coord_x = refined[i, 0]
+                coord_y = refined[i, 1]
+                coord_z = refined[i, 2]
+
+                center_x = int(np.rint((coord_x - origin[0]) / voxel_size[0]))
+                center_y = int(np.rint((coord_y - origin[1]) / voxel_size[1]))
+                center_z = int(np.rint((coord_z - origin[2]) / voxel_size[2]))
+
+                lower_x = max(center_x - radius_grid[0], 0)
+                lower_y = max(center_y - radius_grid[1], 0)
+                lower_z = max(center_z - radius_grid[2], 0)
+                upper_x = min(center_x + radius_grid[0] + 1, nxyz[0])
+                upper_y = min(center_y + radius_grid[1] + 1, nxyz[1])
+                upper_z = min(center_z + radius_grid[2] + 1, nxyz[2])
+
+                if lower_x >= upper_x or lower_y >= upper_y or lower_z >= upper_z:
+                    continue
+
+                weight_sum = 0.0
+                weighted_x = 0.0
+                weighted_y = 0.0
+                weighted_z = 0.0
+
+                for x_idx in range(lower_x, upper_x):
+                    world_x = origin[0] + x_idx * voxel_size[0]
+                    dx = world_x - coord_x
+                    dx_sq = dx * dx
+                    for y_idx in range(lower_y, upper_y):
+                        world_y = origin[1] + y_idx * voxel_size[1]
+                        dy = world_y - coord_y
+                        dy_sq = dy * dy
+                        for z_idx in range(lower_z, upper_z):
+                            world_z = origin[2] + z_idx * voxel_size[2]
+                            dz = world_z - coord_z
+                            dist_sq = dx_sq + dy_sq + dz * dz
+                            if dist_sq > radius_sq:
+                                continue
+
+                            weight = grid[z_idx, y_idx, x_idx]
+                            if weight < 0.0:
+                                weight = 0.0
+                            weight_sum += weight
+                            weighted_x += world_x * weight
+                            weighted_y += world_y * weight
+                            weighted_z += world_z * weight
+
+                if weight_sum <= 1e-8:
+                    continue
+
+                refined[i, 0] = weighted_x / (weight_sum + 1e-8)
+                refined[i, 1] = weighted_y / (weight_sum + 1e-8)
+                refined[i, 2] = weighted_z / (weight_sum + 1e-8)
+
+        return refined
+
+
+def _refine_points_to_density_centroid_python(
     coords,
     grid,
     origin,
     voxel_size,
-    radius=1.5,
-    n_iter=2,
+    nxyz,
+    radius_grid,
+    radius,
+    n_iter,
 ):
-    coords = np.asarray(coords, dtype=np.float32)
-    if len(coords) == 0 or radius <= 0.0 or n_iter <= 0:
-        return coords
-
-    origin = np.asarray(origin, dtype=np.float32)
-    voxel_size = np.asarray(voxel_size, dtype=np.float32)
-    nxyz = np.asarray(grid.shape[::-1], dtype=np.int32)
-    radius_grid = np.maximum(
-        1,
-        np.ceil(radius / np.maximum(voxel_size, 1e-6)).astype(np.int32),
-    )
     refined = np.copy(coords)
 
     for _ in range(n_iter):
@@ -371,6 +506,50 @@ def refine_points_to_density_centroid(
     return refined
 
 
+def refine_points_to_density_centroid(
+    coords,
+    grid,
+    origin,
+    voxel_size,
+    radius=1.5,
+    n_iter=2,
+):
+    coords = np.asarray(coords, dtype=np.float32)
+    if len(coords) == 0 or radius <= 0.0 or n_iter <= 0:
+        return coords
+
+    grid = np.asarray(grid, dtype=np.float32)
+    origin = np.asarray(origin, dtype=np.float32)
+    voxel_size = np.asarray(voxel_size, dtype=np.float32)
+    nxyz = np.asarray(grid.shape[::-1], dtype=np.int32)
+    radius_grid = np.maximum(
+        1,
+        np.ceil(radius / np.maximum(voxel_size, 1e-6)).astype(np.int32),
+    )
+
+    if njit is not None:
+        return _refine_points_to_density_centroid_numba(
+            coords,
+            grid,
+            origin,
+            voxel_size,
+            nxyz,
+            radius_grid,
+            float(radius),
+            int(n_iter),
+        )
+    return _refine_points_to_density_centroid_python(
+        coords,
+        grid,
+        origin,
+        voxel_size,
+        nxyz,
+        radius_grid,
+        radius,
+        n_iter,
+    )
+
+
 def select_supplemental_g2p_points(
     getp_coords,
     g2p_coords,
@@ -397,26 +576,19 @@ def select_supplemental_g2p_points(
     if len(candidate_coords) == 0:
         return np.zeros((0, 3), dtype=np.float32), np.zeros((0,), dtype=np.float32)
 
-    order = np.argsort(candidate_dens)[::-1]
+    order = np.argsort(candidate_dens)[::-1].astype(np.int32)
     candidate_tree = cKDTree(candidate_coords)
-    suppressed = np.zeros((len(candidate_coords),), dtype=bool)
-    selected_indices = []
+    neighborhoods = candidate_tree.query_ball_tree(candidate_tree, r=supplement_merge_distance)
+    offsets, flat_neighbors = _pack_neighborhoods(neighborhoods)
+    max_points_int = -1 if max_points is None else int(max_points)
+    if njit is not None:
+        selected_indices = _greedy_select_indices_numba(order, offsets, flat_neighbors, len(candidate_coords), max_points_int)
+    else:
+        selected_indices = _greedy_select_indices_python(order, offsets, flat_neighbors, len(candidate_coords), max_points_int)
 
-    for idx in order:
-        if suppressed[idx]:
-            continue
-
-        selected_indices.append(int(idx))
-        neighbours = candidate_tree.query_ball_point(candidate_coords[idx], r=supplement_merge_distance)
-        suppressed[np.asarray(neighbours, dtype=np.int32)] = True
-
-        if max_points is not None and len(selected_indices) >= max_points:
-            break
-
-    if not selected_indices:
+    if len(selected_indices) == 0:
         return np.zeros((0, 3), dtype=np.float32), np.zeros((0,), dtype=np.float32)
 
-    selected_indices = np.asarray(selected_indices, dtype=np.int32)
     return (
         candidate_coords[selected_indices],
         candidate_dens[selected_indices],
@@ -730,7 +902,7 @@ def add_args(parser):
     parser.add_argument(
         "--component-link-distance",
         type=float,
-        default=0.0,
+        default=6.0,
         help="Graph edge distance for connected-component filtering; disabled when <= 0",
     )
     parser.add_argument(
@@ -742,7 +914,7 @@ def add_args(parser):
     parser.add_argument(
         "--component-min-fraction-largest",
         type=float,
-        default=0.0,
+        default=0.05,
         help="Drop connected components smaller than this fraction of the largest component; disabled when <= 0",
     )
     parser.add_argument("--atom-name", default="CA", help="Atom name used when writing output PDB points")

@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 import queue
 import random
 import threading
 import time
 import warnings
+import tqdm
 from math import ceil
 from pathlib import Path
 from typing import Any
@@ -333,9 +335,10 @@ def run_dual_inference_on_map(
 
     generator = chunk_generator(scaled_map, box_size=box_size, stride=stride, pre_scaled=True)
     ncx, ncy, ncz = [ceil(nxyz[2 - i] / stride) for i in range(3)]
-    total_steps = float(ncx * ncy * ncz)
-    acc_steps, acc_steps_x, l_bar = 0.0, 0, 0
+    total_steps = int(ncx * ncy * ncz)
+    processed_steps = 0
     start_time = time.time()
+    pbar = tqdm.tqdm(total=total_steps, file=sys.stdout, position=0, leave=True)
     effective_batch_size = batch_size * max(world_size, 1)
     amp_dtype = torch.float16 if fp16 and str(primary_device).startswith("cuda") else None
 
@@ -345,13 +348,8 @@ def run_dual_inference_on_map(
             if len(positions) == 0:
                 break
 
-            acc_steps += len(chunks)
-            acc_steps_x = int((acc_steps / total_steps) * 100.0) // 5
-            if acc_steps_x > l_bar:
-                l_bar = acc_steps_x
-                elapsed = time.time() - start_time
-                bar = f"|{'#' * (2 * l_bar)}{'-' * ((20 - l_bar) * 2)}| {int(l_bar * 5)}% {elapsed:.4f} seconds elapsed"
-                print(f"\r{bar}", flush=True)
+            processed_steps += len(chunks)
+            pbar.update(len(chunks))
 
             x_batch = torch.from_numpy(chunks).view(-1, 1, box_size, box_size, box_size).to(primary_device)
             with torch.no_grad():
@@ -384,8 +382,9 @@ def run_dual_inference_on_map(
     ]
     atom_pred = np.clip(atom_pred, a_min=0.0, a_max=None).astype(np.float32, copy=False)
 
-    if acc_steps < total_steps:
-        print("\r|########################################| 100%", flush=True)
+    if processed_steps < total_steps:
+        pbar.update(total_steps - processed_steps)
+    pbar.close()
 
     return seg_pred, atom_pred, em_map, origin, nxyz, voxel_size, model_kwargs
 

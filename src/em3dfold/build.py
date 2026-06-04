@@ -107,6 +107,24 @@ def add_args(parser):
         action="store_true",
         help="Create the build temporary workspace with tempfile.mkdtemp instead of <output>/temp",
     )
+    parser.add_argument(
+        "--ca-component-link-distance",
+        type=float,
+        default=6.0,
+        help="Optional CA point-graph edge distance for connected-component filtering after getp; disabled when <= 0",
+    )
+    parser.add_argument(
+        "--ca-component-min-size",
+        type=int,
+        default=0,
+        help="Optional minimum CA connected-component size after getp; disabled when <= 0",
+    )
+    parser.add_argument(
+        "--ca-component-min-fraction-largest",
+        type=float,
+        default=0.05,
+        help="Optional minimum fraction of the largest CA connected component kept after getp; disabled when <= 0",
+    )
     parser.add_argument("--keep-temp-files", "-k", action="store_true", help="Whether to keep temp files")
     # Skipping controls
     skip_group = parser.add_argument_group("Skipping options")
@@ -141,8 +159,14 @@ def _run_getp_pipeline(
     ratio=0.05,
     run_getp=True,
     run_g2p=False,
+    component_link_distance=0.0,
+    component_min_size=0,
+    component_min_fraction_largest=0.0,
 ):
-    from em3dfold.pipeline import getp
+    if component_link_distance > 0.0 and (component_min_size > 0 or component_min_fraction_largest > 0.0):
+        from em3dfold.pipeline import getp_filter as getp_module
+    else:
+        from em3dfold.pipeline import getp as getp_module
 
     os.makedirs(output_dir, exist_ok=True)
     getp_args = argparse.Namespace()
@@ -170,7 +194,11 @@ def _run_getp_pipeline(
     getp_args.res_name = res_name
     getp_args.chain_id = chain_id
     getp_args.element = element
-    getp.main(getp_args)
+    if component_link_distance > 0.0 and (component_min_size > 0 or component_min_fraction_largest > 0.0):
+        getp_args.component_link_distance = component_link_distance
+        getp_args.component_min_size = component_min_size
+        getp_args.component_min_fraction_largest = component_min_fraction_largest
+    getp_module.main(getp_args)
 
     merged_output_path = pjoin(output_dir, "merged.pdb")
     if os.path.exists(merged_output_path):
@@ -804,6 +832,9 @@ def main(args):
                     ratio=0.05,
                     run_getp=True,
                     run_g2p=True,
+                    component_link_distance=float(args.ca_component_link_distance),
+                    component_min_size=int(args.ca_component_min_size),
+                    component_min_fraction_largest=float(args.ca_component_min_fraction_largest),
                 )
                 end = time.time()
                 print("# Time = {:.4f}".format(end - start))

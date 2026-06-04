@@ -161,7 +161,7 @@ def add_args(parser):
     parser.add_argument(
         "--ca-component-link-distance",
         type=float,
-        default=0.0,
+        default=6.0,
         help="Optional CA point-graph edge distance for connected-component filtering after getp; disabled when <= 0",
     )
     parser.add_argument(
@@ -173,7 +173,7 @@ def add_args(parser):
     parser.add_argument(
         "--ca-component-min-fraction-largest",
         type=float,
-        default=0.0,
+        default=0.05,
         help="Optional minimum fraction of the largest CA connected component kept after getp; disabled when <= 0",
     )
     parser.add_argument("--keep-temp-files", "-k", action="store_true", help="Whether to keep temp files")

@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 import torch
 import random
@@ -8,6 +9,7 @@ import queue
 import threading
 from math import ceil
 import warnings
+import tqdm
 
 warnings.filterwarnings("ignore")
 
@@ -229,8 +231,9 @@ def load_model_and_run_inference_on_map(model_file, map_file, **kwargs):
     print("# Start processing")
     generator = chunk_generator(scaled_map, box_size=box_size, stride=stride, pre_scaled=True)
     ncx, ncy, ncz = [ceil(nxyz[2 - i] / stride) for i in range(3)]
-    total_steps = float(ncx * ncy * ncz)
-    acc_steps, acc_steps_x, l_bar = 0.0, 0, 0
+    total_steps = int(ncx * ncy * ncz)
+    processed_steps = 0
+    pbar = tqdm.tqdm(total=total_steps, file=sys.stdout, position=0, leave=True)
 
     ts = time.time()
     model_args = {
@@ -251,13 +254,8 @@ def load_model_and_run_inference_on_map(model_file, map_file, **kwargs):
             if len(positions) == 0:
                 break
 
-            acc_steps += len(chunks)
-            acc_steps_x = int((acc_steps / total_steps) * 100.0) // 5
-            if acc_steps_x > l_bar:
-                l_bar = acc_steps_x
-                te = time.time()
-                bar = f"|{'#' * (2 * l_bar)}{'-' * ((20 - l_bar) * 2)}| {int(l_bar * 5)}% {te - ts:.4f} seconds elapsed"
-                print(f"\r{bar}", flush=True)
+            processed_steps += len(chunks)
+            pbar.update(len(chunks))
 
             x_batch = torch.from_numpy(chunks).view(
                 -1, 1, box_size, box_size, box_size
@@ -296,8 +294,9 @@ def load_model_and_run_inference_on_map(model_file, map_file, **kwargs):
         box_size : box_size + nxyz[0],
     ]
 
-    if acc_steps < total_steps:
-        print("\r|########################################| 100%", flush=True)
+    if processed_steps < total_steps:
+        pbar.update(total_steps - processed_steps)
+    pbar.close()
 
     return map_pred, em_map, origin, nxyz, voxel_size
 
