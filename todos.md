@@ -1,1 +1,0 @@
-1. Fixing final result having zero bfactor - Done
