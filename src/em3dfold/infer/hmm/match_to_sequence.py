@@ -6,6 +6,36 @@ from em3dfold.utils.misc_utils import assertion_check
 from em3dfold.polymer_utils.residue_constants import restype_3_to_index
 
 
+def _build_prune_keep_mask_with_internal_gap_rescue(exists_mask, max_gap_len=3):
+    exists_mask = np.asarray(exists_mask > 0.5, dtype=bool)
+    chain_len = len(exists_mask)
+    if chain_len == 0:
+        return exists_mask
+
+    exists_sum = int(np.sum(exists_mask))
+    if exists_sum * 2 < chain_len:
+        return exists_mask
+
+    keep_mask = exists_mask.copy()
+    idx = 0
+    while idx < chain_len:
+        if exists_mask[idx]:
+            idx += 1
+            continue
+
+        start = idx
+        while idx < chain_len and not exists_mask[idx]:
+            idx += 1
+        end = idx
+        gap_len = end - start
+
+        # Rescue only internal short gaps; terminal unmatched regions should still prune away.
+        if start > 0 and end < chain_len and gap_len <= max_gap_len:
+            keep_mask[start:end] = True
+
+    return keep_mask
+
+
 class MatchToSequence:
     def __init__(
         self,
@@ -136,46 +166,43 @@ class MatchToSequence:
 
         # More convenient
         chains = [np.array(c) for c in chains]
+        protein_long_chain_keep_threshold = 20
+        na_long_chain_keep_threshold = 8
         for chain_id in range(len(self.new_sequences)):
-            if (
-                aggressive_pruning
-                and np.sum(self.exists_in_sequence_mask[chain_id] > 0.5)
-                < chain_prune_length
-                and not self.is_nucleotide[chain_id]
-            ) or len(chains[chain_id]) < chain_prune_length:
+            chain_len = len(chains[chain_id])
+            exists_sum = int(np.sum(self.exists_in_sequence_mask[chain_id] > 0.5))
+            long_chain_keep_threshold = (
+                na_long_chain_keep_threshold
+                if self.is_nucleotide[chain_id]
+                else protein_long_chain_keep_threshold
+            )
+
+            if chain_len < chain_prune_length:
                 continue
-            if aggressive_pruning and np.sum(
-                self.exists_in_sequence_mask[chain_id] > 0.5
-            ) < chain_prune_length <= len(chains[chain_id]):
-                # In this case, we keep the chain but mutate the residues to N
-                new_sequences.append(
-                    np.full((len(self.new_sequences[chain_id]),), fill_value=restype_3_to_index["N"], dtype=np.int64)
-                )
-                residue_idxs.append(np.arange(len(self.new_sequences[chain_id])))
+
+            if aggressive_pruning and exists_sum < chain_prune_length:
+                if chain_len < long_chain_keep_threshold:
+                    continue
+                # Keep long low-confidence chains intact. Their sequence registration may
+                # be unreliable, but pruning them outright drops geometrically correct traces.
+                new_sequences.append(self.new_sequences[chain_id])
+                residue_idxs.append(self.residue_idxs[chain_id])
                 exists_in_sequence_mask.append(self.exists_in_sequence_mask[chain_id])
                 new_chains.append(chains[chain_id])
-
             elif aggressive_pruning and not self.is_nucleotide[chain_id]:
-                new_sequences.append(
-                    self.new_sequences[chain_id][
-                        self.exists_in_sequence_mask[chain_id].astype(bool)
-                    ]
+                prune_keep_mask = np.asarray(
+                    self.exists_in_sequence_mask[chain_id] > 0.5, dtype=bool
                 )
-                residue_idxs.append(
-                    self.residue_idxs[chain_id][
-                        self.exists_in_sequence_mask[chain_id].astype(bool)
-                    ]
+                prune_keep_mask = _build_prune_keep_mask_with_internal_gap_rescue(
+                    prune_keep_mask,
+                    max_gap_len=3,
                 )
+                new_sequences.append(self.new_sequences[chain_id][prune_keep_mask])
+                residue_idxs.append(self.residue_idxs[chain_id][prune_keep_mask])
                 exists_in_sequence_mask.append(
-                    self.exists_in_sequence_mask[chain_id][
-                        self.exists_in_sequence_mask[chain_id].astype(bool)
-                    ]
+                    self.exists_in_sequence_mask[chain_id][prune_keep_mask]
                 )
-                new_chains.append(
-                    chains[chain_id][
-                        self.exists_in_sequence_mask[chain_id].astype(bool)
-                    ]
-                )
+                new_chains.append(chains[chain_id][prune_keep_mask])
             else:
                 new_sequences.append(self.new_sequences[chain_id])
                 residue_idxs.append(self.residue_idxs[chain_id])
