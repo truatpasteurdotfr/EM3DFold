@@ -13,6 +13,7 @@ from em3dfold.infer.hmm.aa_probs_to_hmm import aa_logits_to_hmm, alphabet_to_ind
 from em3dfold.utils.fasta_utils import (
     find_match_range,
     in_seq_dict,
+    nuc_sequence_to_purpyr,
     remove_dots,
     remove_non_residue,
     sequence_match,
@@ -260,7 +261,11 @@ def best_match_to_sequences(
             ).digitize(alphabets[i])
             for j, seq in enumerate(sequences)
         ]
-        for i, sequences in enumerate([prot_sequences, rna_sequences, dna_sequences])
+        for i, sequences in enumerate([
+            prot_sequences,
+            [nuc_sequence_to_purpyr(seq) for seq in rna_sequences] if do_pp else rna_sequences,
+            [nuc_sequence_to_purpyr(seq) for seq in dna_sequences] if do_pp else dna_sequences,
+        ])
     ]
 
     if chain_confidences is None:
@@ -594,6 +599,7 @@ def fix_chains_pipeline(
     chain_confidences: List[np.ndarray] = None,
     base_dir: str = "/tmp",
     postprocess=True,
+    do_pp=False,
 ) -> FixChainsOutput:
     """
     What you actually want is to get the smallest sum for the distance as well as the gap
@@ -614,7 +620,7 @@ def fix_chains_pipeline(
         chain_prot_mask=chain_prot_mask,
         chain_confidences=chain_confidences,
         base_dir=base_dir,
-        do_pp=False,
+        do_pp=do_pp,
     )
     if postprocess:
         chains = best_match_output.remove_duplicates(chains, ca_pos)

@@ -126,6 +126,12 @@ def add_args(parser):
         help="Optional minimum fraction of the largest CA connected component kept after getp; disabled when <= 0",
     )
     parser.add_argument("--keep-temp-files", "-k", action="store_true", help="Whether to keep temp files")
+    parser.add_argument(
+        "--keep-hmm-files",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Keep HMM alignment/profile debug artifacts; disable with --no-keep-hmm-files",
+    )
     # Skipping controls
     skip_group = parser.add_argument_group("Skipping options")
     skip_group.add_argument("--skip-preprocess", action='store_true', help=argparse.SUPPRESS)
@@ -659,6 +665,7 @@ def _build_na_lm(
 
 def main(args):
     build_started_at = time.time()
+    os.environ["EM3DFOLD_KEEP_HMM_FILES"] = "1" if bool(getattr(args, "keep_hmm_files", True)) else "0"
     script_dir = os.path.dirname(__file__)
     inferlm_v3x_model_config = pjoin(script_dir, "infer", "config", "model_v3x.yaml")
     weights_root_dir = _resolve_pred_weights_dir(args.pred_weights_dir, script_dir)
@@ -694,6 +701,7 @@ def main(args):
     if runtime_log_path is not None:
         progress(f"Run log: {runtime_log_path}")
     progress(f"Keep temporary files: {bool(args.keep_temp_files)}")
+    progress(f"Keep HMM files: {bool(getattr(args, 'keep_hmm_files', True))}")
 
     multi_stage_device = args.device
     single_stage_device = _primary_device(args.device)

@@ -3,11 +3,13 @@ from __future__ import annotations
 import argparse
 import importlib
 import os
+import sys
 import queue
 import random
 import threading
 import time
 import warnings
+import tqdm
 from math import ceil
 from pathlib import Path
 from typing import Any
@@ -15,7 +17,7 @@ from typing import Any
 import numpy as np
 import torch
 
-from em3dfold.utils.cryo_utils import chunk_generator, get_batch_from_generator, map_batch_to_map, pad_map, parse_map
+from em3dfold.utils.cryo_utils import chunk_generator, get_batch_from_generator, map_batch_to_map, pad_map, parse_map, write_map
 from em3dfold.utils.misc_utils import abspath
 from em3dfold.utils.torch_utils import get_device_names
 
@@ -325,9 +327,9 @@ def run_na_type_inference_on_map(
 
     generator = chunk_generator(padded_map, box_size=box_size, stride=stride, pre_scaled=True)
     ncx, ncy, ncz = [ceil(nxyz[2 - i] / stride) for i in range(3)]
-    total_steps = float(ncx * ncy * ncz)
-    acc_steps, acc_steps_x, l_bar = 0.0, 0, 0
-    start_time = time.time()
+    total_steps = int(ncx * ncy * ncz)
+    processed_steps = 0
+    pbar = tqdm.tqdm(total=total_steps, file=sys.stdout, position=0, leave=True)
     effective_batch_size = batch_size * max(world_size, 1)
     amp_dtype = torch.float16 if fp16 and str(primary_device).startswith("cuda") else None
 
@@ -337,13 +339,8 @@ def run_na_type_inference_on_map(
             if len(positions) == 0:
                 break
 
-            acc_steps += len(chunks)
-            acc_steps_x = int((acc_steps / total_steps) * 100.0) // 5
-            if acc_steps_x > l_bar:
-                l_bar = acc_steps_x
-                elapsed = time.time() - start_time
-                bar = f"|{'#' * (2 * l_bar)}{'-' * ((20 - l_bar) * 2)}| {int(l_bar * 5)}% {elapsed:.4f} seconds elapsed"
-                print(f"\r{bar}", flush=True)
+            processed_steps += len(chunks)
+            pbar.update(len(chunks))
 
             x_batch = torch.from_numpy(chunks).view(-1, 1, box_size, box_size, box_size).to(primary_device)
             with torch.no_grad():
@@ -366,6 +363,10 @@ def run_na_type_inference_on_map(
                     patch_weight,
                 )
 
+    if processed_steps < total_steps:
+        pbar.update(total_steps - processed_steps)
+    pbar.close()
+
     map_pred = (map_pred / denominator.clip(min=1.0))[
         :,
         box_size : box_size + nxyz[2],
@@ -373,14 +374,11 @@ def run_na_type_inference_on_map(
         box_size : box_size + nxyz[0],
     ]
 
-    if acc_steps < total_steps:
-        print("\r|########################################| 100%", flush=True)
-
     return map_pred.astype(np.float32, copy=False), origin, voxel_size, model_kwargs, density_clip_max
 
 
 def add_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
-    parser.add_argument("--input", "-i", type=str, required=True, help="Input EM density map file")
+    parser.add_argument("--input", "-i", type=str, default="na.mrc", help="Input EM density map file; defaults to na.mrc")
     parser.add_argument("--output", "-o", type=str, required=True, help="Output directory")
     parser.add_argument("--ckpt", "-k", type=str, required=True, help="Lightning checkpoint (.ckpt) for the 4-class NA-type model")
     parser.add_argument("--device", "-g", type=str, default="0", help="Which device(s) to use, e.g. '0', 'cpu', or '0,1'")
@@ -397,6 +395,12 @@ def add_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         help="Use Gaussian-weighted patch fusion; disable with --no-gaussian-weight",
     )
     parser.add_argument("--fp16", action=argparse.BooleanOptionalAction, default=False, help="Use autocast fp16 on CUDA for inference")
+    parser.add_argument(
+        "--write-mrc",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Also write per-class A/C/G/U MRC maps; disabled by default",
+    )
     return parser
 
 
@@ -429,19 +433,33 @@ def main(args) -> None:
 
     out_dir = Path(abspath(args.output))
     out_dir.mkdir(parents=True, exist_ok=True)
+    logits = logits.astype(np.float32, copy=False)
     out_path = out_dir / "logits.npz"
     np.savez(
         out_path,
-        map=logits.astype(np.float32, copy=False),
+        map=logits,
         origin=np.asarray(origin, dtype=np.float32),
         voxel_size=np.asarray(voxel_size, dtype=np.float32),
     )
+
+    channel_names = ["A", "C", "G", "U"]
+    if bool(args.write_mrc):
+        for channel_idx, channel_name in enumerate(channel_names):
+            channel_path = out_dir / f"{channel_name}.mrc"
+            write_map(
+                str(channel_path),
+                logits[channel_idx],
+                voxel_size,
+                origin=origin,
+            )
 
     end = time.time()
     print(f"# NA-type model = {model_kwargs['module']}.{model_kwargs['class_name']}")
     print("# Class order = [A, C, G, U/T]")
     print(f"# Density clip max = {density_clip_max:.6f}")
     print(f"# Write logits to {out_path}")
+    if bool(args.write_mrc):
+        print(f"# Write channel maps to {[str(out_dir / (name + '.mrc')) for name in channel_names]}")
     print(f"# Time consuming {end - start:.4f}", flush=True)
 
 

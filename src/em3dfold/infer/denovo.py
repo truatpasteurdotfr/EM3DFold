@@ -420,6 +420,184 @@ def _map_na_sequence_to_res_type(sequence, is_dna):
     return np.array([mapping.get(ch, mapping["N"]) for ch in sequence], dtype=np.int32)
 
 
+def _maybe_override_homopolymer_dna_chain_type(
+    aatype,
+    chain_logits,
+    matched_sequence,
+    *,
+    target_vote_threshold=0.60,
+    at_vote_threshold=0.85,
+    target_prob_threshold=0.55,
+    target_margin_threshold=0.10,
+):
+    matched_sequence = (matched_sequence or "").upper()
+    if len(matched_sequence) == 0:
+        return aatype, None
+    unique_chars = set(matched_sequence)
+    if unique_chars == {"A"}:
+        target_char = "A"
+        target_restype = 20
+        target_idx = 0
+    elif unique_chars == {"U"}:
+        target_char = "T"
+        target_restype = 23
+        target_idx = 3
+    else:
+        return aatype, None
+
+    chain_logits = np.asarray(chain_logits)
+    if chain_logits.ndim != 2 or chain_logits.shape[-1] < num_prot + 4:
+        return aatype, None
+
+    dna_logits = chain_logits[..., num_prot : num_prot + 4]
+    if dna_logits.shape[0] == 0:
+        return aatype, None
+
+    dna_logits = dna_logits - np.max(dna_logits, axis=-1, keepdims=True)
+    dna_probs = np.exp(dna_logits)
+    dna_probs = dna_probs / np.clip(dna_probs.sum(axis=-1, keepdims=True), 1e-8, None)
+
+    mean_probs = dna_probs.mean(axis=0)
+    argmax_idx = np.argmax(dna_probs, axis=-1)
+    target_vote = float(np.mean(argmax_idx == target_idx))
+    at_vote = float(np.mean(np.isin(argmax_idx, [0, 3])))
+    target_prob = float(mean_probs[target_idx])
+    other_best = float(np.max(np.delete(mean_probs, target_idx)))
+    target_margin = target_prob - other_best
+
+    should_override = (
+        target_vote >= target_vote_threshold
+        and at_vote >= at_vote_threshold
+        and target_prob >= target_prob_threshold
+        and target_margin >= target_margin_threshold
+    )
+    if not should_override:
+        return aatype, {
+            "target_char": target_char,
+            "target_vote": target_vote,
+            "at_vote": at_vote,
+            "target_prob": target_prob,
+            "target_margin": target_margin,
+            "applied": False,
+        }
+
+    overridden = np.full_like(aatype, fill_value=target_restype)
+    return overridden, {
+        "target_char": target_char,
+        "target_vote": target_vote,
+        "at_vote": at_vote,
+        "target_prob": target_prob,
+        "target_margin": target_margin,
+        "applied": True,
+    }
+
+
+def _dna_homopolymer_target_char(sequence):
+    sequence = (sequence or "").upper()
+    if len(sequence) == 0:
+        return None
+    unique_chars = set(sequence)
+    if unique_chars == {"A"}:
+        return "A"
+    if unique_chars == {"U"}:
+        return "T"
+    return None
+
+
+def _summarize_dna_chain_logits(chain_logits):
+    chain_logits = np.asarray(chain_logits)
+    if chain_logits.ndim != 2 or chain_logits.shape[-1] < num_prot + 4:
+        return None
+    dna_logits = chain_logits[..., num_prot : num_prot + 4]
+    if dna_logits.shape[0] == 0:
+        return None
+    dna_logits = dna_logits - np.max(dna_logits, axis=-1, keepdims=True)
+    dna_probs = np.exp(dna_logits)
+    dna_probs = dna_probs / np.clip(dna_probs.sum(axis=-1, keepdims=True), 1e-8, None)
+    mean_probs = dna_probs.mean(axis=0)
+    argmax_idx = np.argmax(dna_probs, axis=-1)
+    return {
+        "a_prob": float(mean_probs[0]),
+        "t_prob": float(mean_probs[3]),
+        "at_vote": float(np.mean(np.isin(argmax_idx, [0, 3]))),
+    }
+
+
+def _apply_global_homopolymer_dna_assignment(
+    chains_res_type,
+    chains_aa_logits,
+    sequence_idxs,
+    seqs,
+    seqs_is_dna,
+    *,
+    at_vote_threshold=0.85,
+    assigned_prob_threshold=0.50,
+    assigned_margin_threshold=0.05,
+):
+    del sequence_idxs
+    if not seqs or not all(seqs_is_dna):
+        return chains_res_type
+
+    homopolymer_targets = [_dna_homopolymer_target_char(seq) for seq in seqs]
+    if any(target is None for target in homopolymer_targets):
+        return chains_res_type
+
+    total_a_len = sum(len(seq) for seq, target in zip(seqs, homopolymer_targets) if target == "A")
+    total_t_len = sum(len(seq) for seq, target in zip(seqs, homopolymer_targets) if target == "T")
+    total_len = total_a_len + total_t_len
+    if total_len <= 0:
+        return chains_res_type
+
+    candidate_summaries = []
+    for chain_idx, chain_logits in enumerate(chains_aa_logits):
+        summary = _summarize_dna_chain_logits(chain_logits)
+        if summary is None:
+            continue
+        if summary["at_vote"] < at_vote_threshold:
+            continue
+        summary = dict(summary)
+        summary["chain_idx"] = chain_idx
+        summary["delta_a_minus_t"] = summary["a_prob"] - summary["t_prob"]
+        candidate_summaries.append(summary)
+
+    if not candidate_summaries:
+        return chains_res_type
+
+    candidate_summaries.sort(key=lambda item: item["delta_a_minus_t"])
+    t_fraction = total_t_len / float(total_len)
+    if total_a_len > 0 and total_t_len > 0:
+        num_t = int(round(len(candidate_summaries) * t_fraction))
+        num_t = max(1, min(len(candidate_summaries) - 1, num_t))
+    elif total_t_len > 0:
+        num_t = len(candidate_summaries)
+    else:
+        num_t = 0
+
+    assignments = []
+    for summary in candidate_summaries[:num_t]:
+        assignments.append((summary, "T", 23, summary["t_prob"], summary["t_prob"] - summary["a_prob"]))
+    for summary in candidate_summaries[num_t:]:
+        assignments.append((summary, "A", 20, summary["a_prob"], summary["a_prob"] - summary["t_prob"]))
+
+    for summary, target_char, target_restype, assigned_prob, assigned_margin in assignments:
+        applied = assigned_prob >= assigned_prob_threshold and assigned_margin >= assigned_margin_threshold
+        print(
+            "# Global homopolymer DNA assignment chain={} target={} applied={} a_prob={:.3f} t_prob={:.3f} at_vote={:.3f} margin={:.3f}".format(
+                summary["chain_idx"],
+                target_char,
+                applied,
+                summary["a_prob"],
+                summary["t_prob"],
+                summary["at_vote"],
+                assigned_margin,
+            )
+        )
+        if applied:
+            chains_res_type[summary["chain_idx"]][:] = target_restype
+
+    return chains_res_type
+
+
 def _filter_short_chains(chains, chains_res_type, min_len):
     if min_len <= 1:
         return chains, chains_res_type
@@ -567,6 +745,93 @@ def _select_best_na_match_output(tta_output, vanilla_output, chains):
     )
 
 
+
+
+def _select_best_na_pp_rescue_output(
+    exact_output,
+    pp_rna_output,
+    pp_dna_output,
+    seqs_is_dna,
+    *,
+    exact_match_score_threshold=0.20,
+    pp_match_score_threshold=0.45,
+    min_score_gain=0.10,
+):
+    selected = {
+        "new_sequences": [],
+        "residue_idxs": [],
+        "sequence_idxs": [],
+        "key_start_matches": [],
+        "key_end_matches": [],
+        "match_scores": [],
+        "hmm_output_match_sequences": [],
+        "exists_in_sequence_mask": [],
+        "is_nucleotide": [],
+    }
+    use_pp = []
+
+    exact_match = exact_output.best_match_output
+    if pp_rna_output is not None and len(exact_output.chains) != len(pp_rna_output.chains):
+        print("# WARN NA exact/PP-RNA chain counts differ, skip RNA PP rescue")
+        pp_rna_output = None
+    if pp_dna_output is not None and len(exact_output.chains) != len(pp_dna_output.chains):
+        print("# WARN NA exact/PP-DNA chain counts differ, skip DNA PP rescue")
+        pp_dna_output = None
+
+    for chain_idx in range(len(exact_output.chains)):
+        exact_score = float(exact_match.match_scores[chain_idx])
+        exact_seq_idx = int(exact_match.sequence_idxs[chain_idx])
+        pp_match = None
+        label = None
+        if 0 <= exact_seq_idx < len(seqs_is_dna):
+            if seqs_is_dna[exact_seq_idx]:
+                pp_match = None if pp_dna_output is None else pp_dna_output.best_match_output
+                label = "DNA"
+            else:
+                pp_match = None if pp_rna_output is None else pp_rna_output.best_match_output
+                label = "RNA"
+
+        take_pp = False
+        if pp_match is not None:
+            pp_score = float(pp_match.match_scores[chain_idx])
+            take_pp = (
+                exact_score < exact_match_score_threshold
+                and pp_score >= pp_match_score_threshold
+                and (pp_score - exact_score) >= min_score_gain
+            )
+        else:
+            pp_score = float('nan')
+
+        chosen = pp_match if take_pp else exact_match
+        use_pp.append(take_pp)
+        selected["new_sequences"].append(chosen.new_sequences[chain_idx])
+        selected["residue_idxs"].append(chosen.residue_idxs[chain_idx])
+        selected["sequence_idxs"].append(chosen.sequence_idxs[chain_idx])
+        selected["key_start_matches"].append(chosen.key_start_matches[chain_idx])
+        selected["key_end_matches"].append(chosen.key_end_matches[chain_idx])
+        selected["match_scores"].append(chosen.match_scores[chain_idx])
+        selected["hmm_output_match_sequences"].append(chosen.hmm_output_match_sequences[chain_idx])
+        selected["exists_in_sequence_mask"].append(chosen.exists_in_sequence_mask[chain_idx])
+        selected["is_nucleotide"].append(chosen.is_nucleotide[chain_idx])
+        if take_pp:
+            print(
+                "# NA PP rescue chain={} type={} exact_match_score={:.4f} pp_match_score={:.4f}"
+                .format(chain_idx, label, exact_score, pp_score)
+            )
+
+    merged_output = MatchToSequence(
+        new_sequences=selected["new_sequences"],
+        residue_idxs=selected["residue_idxs"],
+        sequence_idxs=np.array(selected["sequence_idxs"]),
+        key_start_matches=np.array(selected["key_start_matches"]),
+        key_end_matches=np.array(selected["key_end_matches"]),
+        match_scores=np.array(selected["match_scores"]),
+        hmm_output_match_sequences=selected["hmm_output_match_sequences"],
+        exists_in_sequence_mask=selected["exists_in_sequence_mask"],
+        is_nucleotide=selected["is_nucleotide"],
+    )
+    return exact_output._replace(best_match_output=merged_output), np.asarray(use_pp, dtype=bool)
+
 def _build_na_chain_outputs(
     reordered_final_results,
     na_chains,
@@ -606,8 +871,10 @@ def _build_na_chain_outputs(
             after_fallback_masks,
         )
 
-    seqs = [_sanitize_na_sequence(seq) for seq in (rna_seqs + dna_seqs)]
-    seqs_is_dna = [False] * len(rna_seqs) + [True] * len(dna_seqs)
+    rna_seqs_sanitized = [_sanitize_na_sequence(seq) for seq in rna_seqs]
+    dna_seqs_sanitized = [_sanitize_na_sequence(seq) for seq in dna_seqs]
+    seqs = rna_seqs_sanitized + dna_seqs_sanitized
+    seqs_is_dna = [False] * len(rna_seqs_sanitized) + [True] * len(dna_seqs_sanitized)
     first_character = seqs[0][0]
     seqs_is_all_same = np.all(
         np.asarray([all(ch == first_character for ch in seq) for seq in seqs], dtype=bool)
@@ -621,8 +888,8 @@ def _build_na_chain_outputs(
 
     fix_chains_output = fix_chains_pipeline(
         prot_sequences=[],
-        rna_sequences=seqs,
-        dna_sequences=[],
+        rna_sequences=rna_seqs_sanitized,
+        dna_sequences=dna_seqs_sanitized,
         chains=na_chains,
         chain_aa_logits=chains_aa_logits,
         ca_pos=ca_pos,
@@ -630,6 +897,7 @@ def _build_na_chain_outputs(
         chain_confidences=None,
         base_dir=hmm_temp_dir,
         postprocess=False,
+        do_pp=False,
     )
     vanilla_chain_logits = _sample_vanilla_na_chain_logits(
         reordered_final_results,
@@ -639,8 +907,8 @@ def _build_na_chain_outputs(
     if vanilla_chain_logits is not None:
         vanilla_fix_chains_output = fix_chains_pipeline(
             prot_sequences=[],
-            rna_sequences=seqs,
-            dna_sequences=[],
+            rna_sequences=rna_seqs_sanitized,
+            dna_sequences=dna_seqs_sanitized,
             chains=na_chains,
             chain_aa_logits=vanilla_chain_logits,
             ca_pos=ca_pos,
@@ -648,12 +916,53 @@ def _build_na_chain_outputs(
             chain_confidences=None,
             base_dir=hmm_temp_dir,
             postprocess=False,
+            do_pp=False,
         )
         fix_chains_output, _ = _select_best_na_match_output(
             fix_chains_output,
             vanilla_fix_chains_output,
             fix_chains_output.chains,
         )
+
+    pp_chain_logits = [reordered_final_results["pred_aatype"][chain] for chain in fix_chains_output.chains]
+    pp_chain_masks = [np.zeros(len(chain), dtype=bool) for chain in fix_chains_output.chains]
+    pp_rna_fix_chains_output = None
+    pp_dna_fix_chains_output = None
+    if len(rna_seqs_sanitized) > 0:
+        pp_rna_fix_chains_output = fix_chains_pipeline(
+            prot_sequences=[],
+            rna_sequences=rna_seqs_sanitized,
+            dna_sequences=[],
+            chains=fix_chains_output.chains,
+            chain_aa_logits=pp_chain_logits,
+            ca_pos=ca_pos,
+            chain_prot_mask=pp_chain_masks,
+            chain_confidences=None,
+            base_dir=hmm_temp_dir,
+            postprocess=False,
+            do_pp=True,
+        )
+    if len(dna_seqs_sanitized) > 0:
+        pp_dna_fix_chains_output = fix_chains_pipeline(
+            prot_sequences=[],
+            rna_sequences=[],
+            dna_sequences=dna_seqs_sanitized,
+            chains=fix_chains_output.chains,
+            chain_aa_logits=pp_chain_logits,
+            ca_pos=ca_pos,
+            chain_prot_mask=pp_chain_masks,
+            chain_confidences=None,
+            base_dir=hmm_temp_dir,
+            postprocess=False,
+            do_pp=True,
+        )
+    fix_chains_output, _ = _select_best_na_pp_rescue_output(
+        fix_chains_output,
+        pp_rna_fix_chains_output,
+        pp_dna_fix_chains_output,
+        seqs_is_dna,
+    )
+
     predicted_chain_types = _predict_na_chain_types(
         reordered_final_results,
         fix_chains_output.chains,
@@ -690,10 +999,36 @@ def _build_na_chain_outputs(
             aatype[aatype == 26] = 22
             aatype[aatype == 27] = 23
             aatype[aatype >= 28] = 21
+            aatype, homopolymer_override = _maybe_override_homopolymer_dna_chain_type(
+                aatype=aatype,
+                chain_logits=chains_aa_logits[chain_idx],
+                matched_sequence=seqs[seq_idx],
+            )
+            if homopolymer_override is not None:
+                print(
+                    "# Homopolymer DNA override chain={} seq_idx={} target={} applied={} target_vote={:.3f} at_vote={:.3f} target_prob={:.3f} target_margin={:.3f}".format(
+                        chain_idx,
+                        seq_idx,
+                        homopolymer_override["target_char"],
+                        homopolymer_override["applied"],
+                        homopolymer_override["target_vote"],
+                        homopolymer_override["at_vote"],
+                        homopolymer_override["target_prob"],
+                        homopolymer_override["target_margin"],
+                    )
+                )
         else:
             aatype[aatype >= 28] = 21 + 4
         chains_res_type.append(aatype.astype(np.int32))
         chain_fallback_masks.append(np.zeros((len(chain),), dtype=bool))
+
+    chains_res_type = _apply_global_homopolymer_dna_assignment(
+        chains_res_type=chains_res_type,
+        chains_aa_logits=chains_aa_logits,
+        sequence_idxs=fixed_match.sequence_idxs,
+        seqs=seqs,
+        seqs_is_dna=seqs_is_dna,
+    )
 
     if seqs_is_all_same:
         for chain_idx, chain_types in enumerate(chains_res_type):

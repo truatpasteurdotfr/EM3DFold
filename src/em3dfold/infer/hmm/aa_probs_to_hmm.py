@@ -77,6 +77,7 @@ alphabet_to_preamble = {
     "amino": amino_preamble,
     "RNA": rna_preamble,
     "DNA": dna_preamble,
+    "PP": rna_preamble,
 }
 alphabet_to_slice = {
     "amino": np.s_[..., :num_prot],
@@ -203,17 +204,14 @@ def aa_logits_to_hmm(
         alphabet_to_slice[alphabet_type]
     ]
 
-    """
-    # Tao: do not convert D/RNA logits to PP logits, otherwise will lead to severe accuracy drop
     if alphabet_type != "PP":
         aa_log_probs = torch.from_numpy(processed_aa_logits).log_softmax(dim=-1).numpy()
     else:
-        alphabet_type = "RNA"  # Treat all purine-pyrimidine matches as RNA
-        # What follows is a custom implementation of log_softmax
+        # Build a coarse purine/pyrimidine profile while keeping the HMM alphabet RNA-like.
+        alphabet_type = "RNA"
         c = aa_logits[..., 20:].max(axis=-1, keepdims=True)
-        m = aa_logits[..., 20:].min(axis=-1, keepdims=True)
         exp_logits = np.exp(aa_logits - c)
-        exp_logits_gather = np.zeros_like(exp_logits) + np.exp(m - c)
+        exp_logits_gather = np.zeros_like(exp_logits)
         exp_logits_gather[..., restype_3_to_index["G"]] = exp_logits[
             ...,
             [
@@ -236,9 +234,6 @@ def aa_logits_to_hmm(
         aa_logits_gather = np.log(exp_logits_gather)
         logsumexp = np.log(exp_logits_gather.sum(axis=-1, keepdims=True))
         aa_log_probs = aa_logits_gather - logsumexp
-    """
-
-    aa_log_probs = torch.from_numpy(processed_aa_logits).log_softmax(dim=-1).numpy()
     #print(aa_log_probs)
 
     os.makedirs(base_dir, exist_ok=True)

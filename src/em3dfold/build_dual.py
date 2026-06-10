@@ -102,6 +102,16 @@ def add_args(parser):
         help="Optional override for nucleic-acid all-atom denovo weights; defaults to <weights>/na/model_all_atom",
     )
     parser.add_argument(
+        "--na-aa-weights",
+        help="Optional override for voxel-based nucleic-acid typing weights; defaults to <weights>/na/model_na_aa_new",
+    )
+    parser.add_argument(
+        "--infer-na-aa",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Run voxel-based nucleic-acid typing and pass logits into denovo NA sequence assignment; disable with --no-infer-na-aa",
+    )
+    parser.add_argument(
         "--protein-model-config",
         help="Optional protein denovo model config yaml; defaults to model_v3x2_12l_256_128_h8.yaml",
     )
@@ -177,6 +187,12 @@ def add_args(parser):
         help="Optional minimum fraction of the largest CA connected component kept after getp; disabled when <= 0",
     )
     parser.add_argument("--keep-temp-files", "-k", action="store_true", help="Whether to keep temp files")
+    parser.add_argument(
+        "--keep-hmm-files",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Keep HMM alignment/profile debug artifacts; disable with --no-keep-hmm-files",
+    )
     # Skipping controls
     skip_group = parser.add_argument_group("Skipping options")
     skip_group.add_argument("--skip-preprocess", action='store_true', help=argparse.SUPPRESS)
@@ -414,6 +430,36 @@ def _run_inferlm_v3x_job(
     print(f"# inferlm model config: {model_config}")
     print(f"# inferlm polymer input: {polymer_path}")
     inferlm_v3x.main(inferlm_args)
+
+
+def _run_pred_na_type_job(
+    *,
+    map_path,
+    ckpt_path,
+    device,
+    output_dir,
+    batchsize=40,
+    stride=16,
+    box_size=48,
+):
+    from em3dfold.pipeline import pred_na_type
+
+    pred_args = argparse.Namespace()
+    pred_args.input = map_path
+    pred_args.output = output_dir
+    pred_args.ckpt = ckpt_path
+    pred_args.device = device
+    pred_args.batchsize = int(batchsize)
+    pred_args.stride = int(stride)
+    pred_args.box_size = int(box_size)
+    pred_args.apix = 1.0
+    pred_args.normalize_percentile = 99.999
+    pred_args.gaussian_sigma = None
+    pred_args.gaussian_weight = True
+    pred_args.fp16 = False
+    pred_args.write_mrc = False
+    pred_na_type.main(pred_args)
+    return pjoin(output_dir, "logits.npz")
 
 
 def _merge_split_denovo_outputs(output_dir, *, protein_output_dir=None, na_output_dir=None):
@@ -834,6 +880,7 @@ def _build_na_lm(
 
 def main(args):
     build_started_at = time.time()
+    os.environ["EM3DFOLD_KEEP_HMM_FILES"] = "1" if bool(getattr(args, "keep_hmm_files", True)) else "0"
     script_dir = os.path.dirname(__file__)
     inferlm_cpx_model_config = _resolve_optional_file_path(args.cpx_model_config) or pjoin(
         script_dir, "infer", "config", "model_v3x.yaml"
@@ -859,6 +906,11 @@ def main(args):
         _resolve_optional_file_path(args.na_all_atom_weights)
         or pjoin(weights_root_dir, "na", "model_all_atom")
     )
+    na_aa_weights_path = (
+        _resolve_optional_file_path(args.na_aa_weights)
+        or pjoin(weights_root_dir, "na", "model_na_aa_new")
+    )
+    enable_infer_na_aa = bool(getattr(args, "infer_na_aa", True)) and (not args.skip_infer_na_aa)
 
     out_dir = abspath(args.output)
     temp_dir = _prepare_temp_dir(
@@ -873,6 +925,8 @@ def main(args):
     print(f"# inferlm cpx weights dir: {cpx_all_atom_weights_dir}")
     print(f"# inferlm protein weights dir: {protein_all_atom_weights_dir}")
     print(f"# inferlm NA weights dir: {na_all_atom_weights_dir}")
+    print(f"# voxel NA typing weights path: {na_aa_weights_path}")
+    print(f"# voxel NA typing enabled: {enable_infer_na_aa}")
     print(f"# inferlm fallback cpx config: {inferlm_cpx_model_config}")
     print(f"# inferlm protein config: {inferlm_protein_model_config}")
     print(f"# inferlm NA config: {inferlm_na_model_config}")
@@ -895,6 +949,7 @@ def main(args):
     if runtime_log_path is not None:
         progress(f"Run log: {runtime_log_path}")
     progress(f"Keep temporary files: {bool(args.keep_temp_files)}")
+    progress(f"Keep HMM files: {bool(getattr(args, 'keep_hmm_files', True))}")
 
     multi_stage_device = args.device
     single_stage_device = _primary_device(args.device)
@@ -951,6 +1006,7 @@ def main(args):
     )
     run_protein_input = protein_seq_path is not None
     run_nucleic_input = (rna_seq_path is not None) or (dna_seq_path is not None)
+    na_aa_logits_path = None
 
     # run segmentation
     _announce_build_stage("pred", active_stages)
@@ -982,11 +1038,38 @@ def main(args):
 
         pred_dual.main(pred_args)
         clear_cuda_cache(multi_stage_device, note="pred")
+
+        if run_nucleic_input and (not args.skip_infer_na):
+            if enable_infer_na_aa:
+                if not os.path.exists(na_aa_weights_path):
+                    raise FileNotFoundError(
+                        (
+                            "Voxel NA typing weights are not found: {}. "
+                            "Use --na-aa-weights to override or --no-infer-na-aa to disable."
+                        ).format(na_aa_weights_path)
+                    )
+                na_aa_output_dir = pjoin(temp_dir, "pred", "na_aa")
+                os.makedirs(na_aa_output_dir, exist_ok=True)
+                na_aa_logits_path = _run_pred_na_type_job(
+                    map_path=pjoin(temp_dir, "pred", "na.mrc"),
+                    ckpt_path=na_aa_weights_path,
+                    device=multi_stage_device,
+                    output_dir=na_aa_output_dir,
+                )
+                clear_cuda_cache(multi_stage_device, note="pred_na_type")
+                print(f"# build_dual: voxel NA typing logits = {na_aa_logits_path}")
+            else:
+                print("# build_dual: voxel NA typing disabled; use model prediction fallback only")
+
         end = time.time()
 
         print("# Time = {:.4f}".format(end - start))
         _finish_build_stage(start)
     else:
+        expected_na_aa_logits_path = pjoin(temp_dir, "pred", "na_aa", "logits.npz")
+        if os.path.exists(expected_na_aa_logits_path):
+            na_aa_logits_path = expected_na_aa_logits_path
+            print(f"# Reuse voxel NA typing logits = {na_aa_logits_path}")
         _finish_build_stage(skipped=True)
 
 
@@ -1054,10 +1137,7 @@ def main(args):
         run_na = run_nucleic_input and (not args.skip_infer_na)
 
         if args.skip_infer_na_aa:
-            print("# skip-infer-na-aa is ignore")
-
-        if run_na:
-            print("# build_dual: NA aa logits are disabled; use model prediction fallback only")
+            print("# skip-infer-na-aa is deprecated; treated as --no-infer-na-aa")
 
         if run_protein or run_na:
             denovo_dir = pjoin(temp_dir, "denovo")
@@ -1172,7 +1252,7 @@ def main(args):
                         dna_seq=dna_seq_path,
                         rna_seq=rna_seq_path,
                         na_seq_embed=na_seq_embed_path,
-                        na_aa_logits=None,
+                        na_aa_logits=na_aa_logits_path,
                         fallback_to_predicted_na_types=True,
                     )
                     clear_cuda_cache(multi_stage_device, note="inferlm_v3x_na")
@@ -1201,7 +1281,7 @@ def main(args):
                     rna_seq=rna_seq_path,
                     prot_seq_embed=prot_seq_embed_path,
                     na_seq_embed=na_seq_embed_path,
-                    na_aa_logits=None,
+                    na_aa_logits=na_aa_logits_path,
                     fallback_to_predicted_na_types=bool(run_na),
                 )
                 clear_cuda_cache(multi_stage_device, note="inferlm_v3x_cpx")
