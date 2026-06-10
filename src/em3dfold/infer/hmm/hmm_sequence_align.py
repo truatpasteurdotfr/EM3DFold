@@ -1,4 +1,7 @@
 from collections import namedtuple
+from itertools import count
+import json
+import os
 from typing import List, Tuple
 
 import numpy as np
@@ -29,6 +32,36 @@ HMMAlignment = namedtuple(
         "exists_in_sequence_mask",
     ],
 )
+
+
+_HMM_ALIGNMENT_DEBUG_COUNTER = count()
+
+
+def _keep_hmm_artifacts_enabled() -> bool:
+    flag = os.environ.get("EM3DFOLD_KEEP_HMM_FILES", "")
+    return flag.lower() not in {"", "0", "false", "no"}
+
+
+def _jsonable(value):
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, (np.integer, np.floating)):
+        return value.item()
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(x) for x in value]
+    if isinstance(value, dict):
+        return {k: _jsonable(v) for k, v in value.items()}
+    return value
+
+
+def _write_hmm_alignment_debug(base_dir: str, payload: dict) -> None:
+    if not _keep_hmm_artifacts_enabled():
+        return
+    os.makedirs(base_dir, exist_ok=True)
+    debug_idx = next(_HMM_ALIGNMENT_DEBUG_COUNTER)
+    path = os.path.join(base_dir, f"alignment_{debug_idx:05d}.json")
+    with open(path, "w") as handle:
+        json.dump(_jsonable(payload), handle, indent=2)
 
 
 def expand_shared_na_logits_to_full_vocab(aa_logits: np.ndarray) -> np.ndarray:
@@ -62,6 +95,11 @@ def get_hmm_alignment(
     base_dir: str = "/tmp",
     is_nucleotide: bool = False,
 ) -> HMMAlignment:
+    debug_payload = {
+        "input_length": int(len(aa_logits)),
+        "is_nucleotide": bool(is_nucleotide),
+        "base_dir": base_dir,
+    }
     aa_logits = expand_shared_na_logits_to_full_vocab(aa_logits)
     if not is_nucleotide:
         hmm = aa_logits_to_hmm(
@@ -71,19 +109,25 @@ def get_hmm_alignment(
             hmm, digital_prot_sequences, all_consensus_cols=True
         )
         processed_msas = msas.alignment
-        seq_idx = np.argmax(
-            np.array([len(remove_non_residue(x)) for x in processed_msas])
-        )
+        prot_match_lengths = np.array([len(remove_non_residue(x)) for x in processed_msas])
+        seq_idx = np.argmax(prot_match_lengths)
         msa_index_corr = get_msa_index_correspondence(processed_msas[seq_idx])
         index_dict = alphabet_to_index["amino"]
         match_sequence = msa_index_corr.sequence
         original_pred_seq = np.argmax(aa_logits[..., :num_prot], axis=-1)
+        debug_payload.update({
+            "match_type": "amino",
+            "candidate_match_lengths": prot_match_lengths.tolist(),
+            "selected_candidate_index": int(seq_idx),
+        })
     else:
         if do_pp:
             assert raw_rna_sequences is not None or raw_dna_sequences is not None
         has_rna_seq = len(digital_rna_sequences) > 0
         has_dna_seq = len(digital_dna_sequences) > 0
         match_type = ""
+        rna_match_lengths = []
+        dna_match_lengths = []
         if has_rna_seq:
             hmm_rna = aa_logits_to_hmm(
                 aa_logits,
@@ -94,12 +138,9 @@ def get_hmm_alignment(
             rna_processed_msas = pyhmmer.hmmer.hmmalign(
                 hmm_rna, digital_rna_sequences, all_consensus_cols=True
             ).alignment
-            rna_seq_idx = np.argmax(
-                np.array([len(remove_non_residue(x)) for x in rna_processed_msas])
-            )
-            rna_seq_val = np.max(
-                np.array([len(remove_non_residue(x)) for x in rna_processed_msas])
-            )
+            rna_match_lengths = np.array([len(remove_non_residue(x)) for x in rna_processed_msas])
+            rna_seq_idx = np.argmax(rna_match_lengths)
+            rna_seq_val = np.max(rna_match_lengths)
         if has_dna_seq:
             hmm_dna = aa_logits_to_hmm(
                 aa_logits,
@@ -110,12 +151,9 @@ def get_hmm_alignment(
             dna_processed_msas = pyhmmer.hmmer.hmmalign(
                 hmm_dna, digital_dna_sequences, all_consensus_cols=True
             ).alignment
-            dna_seq_idx = np.argmax(
-                np.array([len(remove_non_residue(x)) for x in dna_processed_msas])
-            )
-            dna_seq_val = np.max(
-                np.array([len(remove_non_residue(x)) for x in dna_processed_msas])
-            )
+            dna_match_lengths = np.array([len(remove_non_residue(x)) for x in dna_processed_msas])
+            dna_seq_idx = np.argmax(dna_match_lengths)
+            dna_seq_val = np.max(dna_match_lengths)
         if has_rna_seq and has_dna_seq:
             if rna_seq_val <= dna_seq_val:
                 match_type = "RNA"
@@ -126,12 +164,29 @@ def get_hmm_alignment(
         elif has_dna_seq:
             match_type = "DNA"
 
+        debug_payload.update({
+            "match_type": match_type,
+            "rna_match_lengths": rna_match_lengths.tolist() if len(rna_match_lengths) else [],
+            "dna_match_lengths": dna_match_lengths.tolist() if len(dna_match_lengths) else [],
+            "selected_rna_index": int(rna_seq_idx) if has_rna_seq else None,
+            "selected_dna_index": int(dna_seq_idx) if has_dna_seq else None,
+        })
+
+        pred_rna_seq = np.argmax(aa_logits[..., num_prot + 4 : num_prot + 8], axis=-1) + (num_prot + 4)
+        pred_dna_seq = np.argmax(aa_logits[..., num_prot : num_prot + 4], axis=-1) + num_prot
+        pred_na_seq = np.where(
+            np.max(aa_logits[..., num_prot : num_prot + 4], axis=-1)
+            >= np.max(aa_logits[..., num_prot + 4 : num_prot + 8], axis=-1),
+            pred_dna_seq,
+            pred_rna_seq,
+        )
+
         if match_type == "":
             made_up_match = "-" * len(aa_logits)
             msa_index_corr = get_msa_index_correspondence(made_up_match)
             index_dict = alphabet_to_index["RNA"]
             seq_idx = len(digital_prot_sequences)
-            original_pred_seq = np.full(len(aa_logits), fill_value=restype_3_to_index["N"], dtype=np.int64)
+            original_pred_seq = pred_na_seq
         elif match_type == "RNA":
             original_seq = None if not do_pp else raw_rna_sequences[rna_seq_idx]
             msa_index_corr = get_msa_index_correspondence(
@@ -139,7 +194,7 @@ def get_hmm_alignment(
             )
             index_dict = alphabet_to_index["RNA"]
             seq_idx = rna_seq_idx + len(digital_prot_sequences)
-            original_pred_seq = np.full(len(aa_logits), fill_value=restype_3_to_index["N"], dtype=np.int64)
+            original_pred_seq = pred_rna_seq
         elif match_type == "DNA":
             original_seq = None if not do_pp else raw_dna_sequences[dna_seq_idx]
             msa_index_corr = get_msa_index_correspondence(
@@ -149,7 +204,7 @@ def get_hmm_alignment(
             seq_idx = (
                 dna_seq_idx + len(digital_prot_sequences) + len(digital_rna_sequences)
             )
-            original_pred_seq = np.full(len(aa_logits), fill_value=restype_3_to_index["DN"], dtype=np.int64)
+            original_pred_seq = pred_dna_seq
         match_sequence = msa_index_corr.sequence
 
     msa_sequence = np.array(
@@ -158,6 +213,18 @@ def get_hmm_alignment(
     new_sequence = np.where(msa_sequence != -1, msa_sequence, original_pred_seq)
 
     match_score = len(remove_non_residue(match_sequence)) / len(match_sequence)
+    debug_payload.update({
+        "final_seq_idx": int(seq_idx),
+        "match_score": float(match_score),
+        "match_sequence": match_sequence,
+        "res_idx": msa_index_corr.res_idx,
+        "key_start_match": int(msa_index_corr.key_start_match),
+        "key_end_match": int(msa_index_corr.key_end_match),
+        "exists_in_sequence_mask": msa_index_corr.exists_in_sequence_mask,
+        "original_pred_seq": original_pred_seq,
+        "new_sequence": new_sequence,
+    })
+    _write_hmm_alignment_debug(base_dir, debug_payload)
     return HMMAlignment(
         sequence=new_sequence,
         seq_idx=seq_idx,

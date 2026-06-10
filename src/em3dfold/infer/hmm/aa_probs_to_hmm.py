@@ -1,5 +1,6 @@
 import os
 import math
+import tempfile
 from typing import Iterable
 import numpy as np
 import torch
@@ -88,6 +89,11 @@ alphabet_to_index = {
     "RNA": {"A": 24, "C": 25, "G": 26, "U": 27},
     "DNA": {"A": 20, "C": 21, "G": 22, "T": 23},
 }
+
+
+def _keep_hmm_artifacts_enabled() -> bool:
+    flag = os.environ.get("EM3DFOLD_KEEP_HMM_FILES", "")
+    return flag.lower() not in {"", "0", "false", "no"}
 
 
 def aa_log_probs_to_hmm_file(
@@ -235,7 +241,14 @@ def aa_logits_to_hmm(
     aa_log_probs = torch.from_numpy(processed_aa_logits).log_softmax(dim=-1).numpy()
     #print(aa_log_probs)
 
-    tmp_path = os.path.join(base_dir, f"hmm_temp.hmm")
+    os.makedirs(base_dir, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        dir=base_dir,
+        prefix=f"hmm_{alphabet_type.lower()}_",
+        suffix=".hmm",
+        delete=False,
+    ) as handle:
+        tmp_path = handle.name
     aa_log_probs_to_hmm_file(
         name="hmm_search",
         aa_log_probs=aa_log_probs,
@@ -247,7 +260,8 @@ def aa_logits_to_hmm(
     with HMMFile(tmp_path) as hmm_file:
         hmm = hmm_file.read()
 
-    os.remove(tmp_path)
+    if not _keep_hmm_artifacts_enabled():
+        os.remove(tmp_path)
     return hmm
 
 
