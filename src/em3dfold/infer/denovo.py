@@ -27,6 +27,55 @@ from em3dfold.utils.to_all_atom import affines_and_torsion_angles_to_atomc_pos
 FALLBACK_CONFIDENCE_SENTINEL = 0.0
 
 
+def _disable_na_pp_rescue() -> bool:
+    flag = os.environ.get("EM3DFOLD_NA_DISABLE_PP_RESCUE", "")
+    return flag.lower() in {"1", "true", "yes", "on"}
+
+
+def _require_vanilla_support_for_na_pp() -> bool:
+    flag = os.environ.get("EM3DFOLD_NA_PP_REQUIRE_VANILLA_SUPPORT", "")
+    if flag == "":
+        return True
+    return flag.lower() in {"1", "true", "yes", "on"}
+
+
+def _na_pp_vanilla_support_threshold() -> float:
+    value = os.environ.get("EM3DFOLD_NA_PP_VANILLA_SUPPORT_THRESHOLD", "0.65")
+    try:
+        return float(value)
+    except ValueError:
+        return 0.65
+
+
+def _enable_na_pp_moderate_rescue() -> bool:
+    flag = os.environ.get("EM3DFOLD_NA_PP_ENABLE_MODERATE_RESCUE", "")
+    return flag.lower() in {"1", "true", "yes", "on"}
+
+
+def _na_pp_moderate_exact_threshold() -> float:
+    value = os.environ.get("EM3DFOLD_NA_PP_MODERATE_EXACT_THRESHOLD", "0.15")
+    try:
+        return float(value)
+    except ValueError:
+        return 0.15
+
+
+def _na_pp_moderate_score_threshold() -> float:
+    value = os.environ.get("EM3DFOLD_NA_PP_MODERATE_SCORE_THRESHOLD", "0.50")
+    try:
+        return float(value)
+    except ValueError:
+        return 0.50
+
+
+def _na_pp_moderate_min_gain() -> float:
+    value = os.environ.get("EM3DFOLD_NA_PP_MODERATE_MIN_GAIN", "0.35")
+    try:
+        return float(value)
+    except ValueError:
+        return 0.35
+
+
 def remove_overlapping_ca(
     ca_positions: np.ndarray,
     bfactors,
@@ -661,13 +710,121 @@ def _sample_vanilla_na_chain_logits(reordered_final_results, na_chains, na_aa_lo
     return vanilla_chain_logits
 
 
-def _select_best_na_match_output(tta_output, vanilla_output, chains):
+def _summarize_na_mode_selection(debug_records, chains):
+    total_residues = 0
+    exact_residues = 0
+    pp_residues = 0
+    for chain_idx, chain in enumerate(chains):
+        chain_len = len(chain)
+        total_residues += chain_len
+        chosen_mode = "exact"
+        if debug_records is not None and chain_idx < len(debug_records):
+            chosen_mode = str(debug_records[chain_idx].get("chosen_mode", "exact"))
+        if chosen_mode == "pp":
+            pp_residues += chain_len
+        else:
+            exact_residues += chain_len
+    denom = max(total_residues, 1)
+    return {
+        "total_residues": int(total_residues),
+        "exact_residues": int(exact_residues),
+        "pp_residues": int(pp_residues),
+        "exact_ratio": float(exact_residues / denom),
+        "pp_ratio": float(pp_residues / denom),
+    }
+
+
+
+def _select_best_na_match_output(
+    tta_output,
+    vanilla_output,
+    chains,
+    *,
+    tta_debug_records=None,
+    vanilla_debug_records=None,
+    pp_mode_penalty=0.05,
+    vanilla_enable_tta_score_threshold=0.50,
+    vanilla_min_score_gain=0.15,
+    vanilla_pp_min_score=0.85,
+    vanilla_exact_min_score=0.70,
+):
+    tta_match = tta_output.best_match_output
+    tta_score_sum = float(np.sum(tta_match.match_scores))
+
     if vanilla_output is None:
-        return tta_output, None
+        summary = {
+            "tta_score_sum": tta_score_sum,
+            "vanilla_score_sum": None,
+            "tta_residue_ratio": 1.0,
+            "vanilla_residue_ratio": 0.0,
+            "exact_ratio": None,
+            "pp_ratio": None,
+            "pp_mode_penalty": float(pp_mode_penalty),
+            "vanilla_enable_tta_score_threshold": float(vanilla_enable_tta_score_threshold),
+            "vanilla_min_score_gain": float(vanilla_min_score_gain),
+            "vanilla_pp_min_score": float(vanilla_pp_min_score),
+            "vanilla_exact_min_score": float(vanilla_exact_min_score),
+            "vanilla_available": False,
+        }
+        selected_debug = []
+        mode_summary = _summarize_na_mode_selection(tta_debug_records or [], chains)
+        summary["exact_ratio"] = float(mode_summary["exact_ratio"])
+        summary["pp_ratio"] = float(mode_summary["pp_ratio"])
+        for chain_idx, chain in enumerate(chains):
+            chain_len = len(chain)
+            tta_record = (
+                dict(tta_debug_records[chain_idx])
+                if tta_debug_records is not None and chain_idx < len(tta_debug_records)
+                else {
+                    "chain_idx": int(chain_idx),
+                    "source": "tta",
+                    "exact_score": float(tta_match.match_scores[chain_idx]),
+                    "pp_score": None,
+                    "chosen_mode": "exact",
+                    "chosen_raw_score": float(tta_match.match_scores[chain_idx]),
+                    "chosen_effective_score": float(tta_match.match_scores[chain_idx]),
+                }
+            )
+            selected_debug.append({
+                "chain_idx": int(chain_idx),
+                "chain_len": int(chain_len),
+                "tta_exact_score": tta_record.get("exact_score"),
+                "tta_pp_score": tta_record.get("pp_score"),
+                "tta_selected_mode": tta_record.get("chosen_mode", "exact"),
+                "tta_selected_raw_score": tta_record.get("chosen_raw_score", float(tta_match.match_scores[chain_idx])),
+                "tta_selected_effective_score": tta_record.get("chosen_effective_score", float(tta_match.match_scores[chain_idx])),
+                "vanilla_exact_score": None,
+                "vanilla_pp_score": None,
+                "vanilla_selected_mode": None,
+                "vanilla_selected_raw_score": None,
+                "vanilla_selected_effective_score": None,
+                "chosen_source": "tta",
+                "chosen_mode": tta_record.get("chosen_mode", "exact"),
+                "chosen_raw_score": tta_record.get("chosen_raw_score", float(tta_match.match_scores[chain_idx])),
+                "chosen_effective_score": tta_record.get("chosen_effective_score", float(tta_match.match_scores[chain_idx])),
+                "score_margin_vs_other_source": None,
+            })
+        return tta_output, np.ones((len(chains),), dtype=bool), selected_debug, summary
 
     if len(tta_output.chains) != len(vanilla_output.chains):
-        print("# WARN NA TTA/vanilla chain counts differ, keep TTA logits alignment")
-        return tta_output, None
+        print("# WARN NA TTA/vanilla chain counts differ, keep TTA branch selection")
+        return _select_best_na_match_output(
+            tta_output,
+            None,
+            chains,
+            tta_debug_records=tta_debug_records,
+            vanilla_debug_records=vanilla_debug_records,
+            pp_mode_penalty=pp_mode_penalty,
+            vanilla_enable_tta_score_threshold=vanilla_enable_tta_score_threshold,
+            vanilla_min_score_gain=vanilla_min_score_gain,
+            vanilla_pp_min_score=vanilla_pp_min_score,
+            vanilla_exact_min_score=vanilla_exact_min_score,
+        )
+
+    vanilla_match = vanilla_output.best_match_output
+    vanilla_score_sum = float(np.sum(vanilla_match.match_scores))
+    print("# NA TTA branch score = {:.4f}".format(tta_score_sum))
+    print("# NA vanilla branch score = {:.4f}".format(vanilla_score_sum))
 
     use_tta = []
     selected = {
@@ -681,52 +838,135 @@ def _select_best_na_match_output(tta_output, vanilla_output, chains):
         "exists_in_sequence_mask": [],
         "is_nucleotide": [],
     }
-
-    tta_match = tta_output.best_match_output
-    vanilla_match = vanilla_output.best_match_output
-    tta_score_sum = float(np.sum(tta_match.match_scores))
-    vanilla_score_sum = float(np.sum(vanilla_match.match_scores))
-    print("# NA TTA score = {:.4f}".format(tta_score_sum))
-    print("# NA vanilla score = {:.4f}".format(vanilla_score_sum))
-
+    selected_debug = []
     tta_residue_count = 0
     vanilla_residue_count = 0
+    exact_residue_count = 0
+    pp_residue_count = 0
     total_residue_count = 0
-    for chain_idx in range(len(chains)):
-        tta_score = tta_match.match_scores[chain_idx]
-        vanilla_score = vanilla_match.match_scores[chain_idx]
-        choose_tta = tta_score > vanilla_score
-        use_tta.append(choose_tta)
 
+    for chain_idx in range(len(chains)):
         chain_len = len(chains[chain_idx])
         total_residue_count += chain_len
-        source = tta_match if choose_tta else vanilla_match
+        tta_record = (
+            dict(tta_debug_records[chain_idx])
+            if tta_debug_records is not None and chain_idx < len(tta_debug_records)
+            else {
+                "chain_idx": int(chain_idx),
+                "source": "tta",
+                "exact_score": float(tta_match.match_scores[chain_idx]),
+                "pp_score": None,
+                "chosen_mode": "exact",
+                "chosen_raw_score": float(tta_match.match_scores[chain_idx]),
+                "chosen_effective_score": float(tta_match.match_scores[chain_idx]),
+            }
+        )
+        vanilla_record = (
+            dict(vanilla_debug_records[chain_idx])
+            if vanilla_debug_records is not None and chain_idx < len(vanilla_debug_records)
+            else {
+                "chain_idx": int(chain_idx),
+                "source": "vanilla",
+                "exact_score": float(vanilla_match.match_scores[chain_idx]),
+                "pp_score": None,
+                "chosen_mode": "exact",
+                "chosen_raw_score": float(vanilla_match.match_scores[chain_idx]),
+                "chosen_effective_score": float(vanilla_match.match_scores[chain_idx]),
+            }
+        )
+
+        tta_raw_score = float(tta_record.get("chosen_raw_score", float(tta_match.match_scores[chain_idx])))
+        vanilla_raw_score = float(vanilla_record.get("chosen_raw_score", float(vanilla_match.match_scores[chain_idx])))
+        tta_mode = str(tta_record.get("chosen_mode", "exact"))
+        vanilla_mode = str(vanilla_record.get("chosen_mode", "exact"))
+        tta_effective_score = float(tta_raw_score - (pp_mode_penalty if tta_mode == "pp" else 0.0))
+        vanilla_effective_score = float(vanilla_raw_score - (pp_mode_penalty if vanilla_mode == "pp" else 0.0))
+
+        vanilla_has_rescue_score = (
+            vanilla_raw_score >= vanilla_exact_min_score
+            if vanilla_mode == "exact"
+            else vanilla_raw_score >= vanilla_pp_min_score
+        )
+        allow_vanilla_override = (
+            tta_raw_score < vanilla_enable_tta_score_threshold
+            and vanilla_has_rescue_score
+            and (vanilla_raw_score - tta_raw_score) >= vanilla_min_score_gain
+        )
+
+        if not allow_vanilla_override:
+            choose_tta = True
+        elif tta_effective_score > vanilla_effective_score:
+            choose_tta = True
+        elif vanilla_effective_score > tta_effective_score:
+            choose_tta = False
+        elif tta_mode != vanilla_mode:
+            choose_tta = (tta_mode == "exact")
+        elif tta_raw_score != vanilla_raw_score:
+            choose_tta = (tta_raw_score >= vanilla_raw_score)
+        else:
+            choose_tta = True
+
+        use_tta.append(choose_tta)
+        source_match = tta_match if choose_tta else vanilla_match
+        chosen_record = tta_record if choose_tta else vanilla_record
+        chosen_source = "tta" if choose_tta else "vanilla"
+        chosen_mode = str(chosen_record.get("chosen_mode", "exact"))
+        chosen_raw_score = tta_raw_score if choose_tta else vanilla_raw_score
+        chosen_effective_score = tta_effective_score if choose_tta else vanilla_effective_score
+
         if choose_tta:
             tta_residue_count += chain_len
         else:
             vanilla_residue_count += chain_len
+        if chosen_mode == "pp":
+            pp_residue_count += chain_len
+        else:
+            exact_residue_count += chain_len
 
-        selected["new_sequences"].append(source.new_sequences[chain_idx])
-        selected["residue_idxs"].append(source.residue_idxs[chain_idx])
-        selected["sequence_idxs"].append(source.sequence_idxs[chain_idx])
-        selected["key_start_matches"].append(source.key_start_matches[chain_idx])
-        selected["key_end_matches"].append(source.key_end_matches[chain_idx])
-        selected["match_scores"].append(source.match_scores[chain_idx])
-        selected["hmm_output_match_sequences"].append(
-            source.hmm_output_match_sequences[chain_idx]
-        )
-        selected["exists_in_sequence_mask"].append(
-            source.exists_in_sequence_mask[chain_idx]
-        )
-        selected["is_nucleotide"].append(source.is_nucleotide[chain_idx])
+        selected["new_sequences"].append(source_match.new_sequences[chain_idx])
+        selected["residue_idxs"].append(source_match.residue_idxs[chain_idx])
+        selected["sequence_idxs"].append(source_match.sequence_idxs[chain_idx])
+        selected["key_start_matches"].append(source_match.key_start_matches[chain_idx])
+        selected["key_end_matches"].append(source_match.key_end_matches[chain_idx])
+        selected["match_scores"].append(source_match.match_scores[chain_idx])
+        selected["hmm_output_match_sequences"].append(source_match.hmm_output_match_sequences[chain_idx])
+        selected["exists_in_sequence_mask"].append(source_match.exists_in_sequence_mask[chain_idx])
+        selected["is_nucleotide"].append(source_match.is_nucleotide[chain_idx])
+        selected_debug.append({
+            "chain_idx": int(chain_idx),
+            "chain_len": int(chain_len),
+            "tta_exact_score": tta_record.get("exact_score"),
+            "tta_pp_score": tta_record.get("pp_score"),
+            "tta_selected_mode": tta_mode,
+            "tta_selected_raw_score": tta_raw_score,
+            "tta_selected_effective_score": tta_effective_score,
+            "vanilla_exact_score": vanilla_record.get("exact_score"),
+            "vanilla_pp_score": vanilla_record.get("pp_score"),
+            "vanilla_selected_mode": vanilla_mode,
+            "vanilla_selected_raw_score": vanilla_raw_score,
+            "vanilla_selected_effective_score": vanilla_effective_score,
+            "chosen_source": chosen_source,
+            "chosen_mode": chosen_mode,
+            "chosen_raw_score": chosen_raw_score,
+            "chosen_effective_score": chosen_effective_score,
+            "score_margin_vs_other_source": float(abs(tta_effective_score - vanilla_effective_score)),
+            "allow_vanilla_override": bool(allow_vanilla_override),
+            "vanilla_has_rescue_score": bool(vanilla_has_rescue_score),
+        })
 
-    if total_residue_count > 0:
-        print(
-            "# Using TTA ratio = {:.4f} using vanilla ratio = {:.4f}".format(
-                tta_residue_count / total_residue_count,
-                vanilla_residue_count / total_residue_count,
-            )
+    denom = max(total_residue_count, 1)
+    print(
+        "# Using TTA ratio = {:.4f} using vanilla ratio = {:.4f}".format(
+            tta_residue_count / denom,
+            vanilla_residue_count / denom,
         )
+    )
+    print(
+        "# Using exact ratio = {:.4f} using PP ratio = {:.4f}".format(
+            exact_residue_count / denom,
+            pp_residue_count / denom,
+        )
+    )
 
     merged_output = MatchToSequence(
         new_sequences=selected["new_sequences"],
@@ -739,11 +979,26 @@ def _select_best_na_match_output(tta_output, vanilla_output, chains):
         exists_in_sequence_mask=selected["exists_in_sequence_mask"],
         is_nucleotide=selected["is_nucleotide"],
     )
+    summary = {
+        "tta_score_sum": float(tta_score_sum),
+        "vanilla_score_sum": float(vanilla_score_sum),
+        "tta_residue_ratio": float(tta_residue_count / denom),
+        "vanilla_residue_ratio": float(vanilla_residue_count / denom),
+        "exact_ratio": float(exact_residue_count / denom),
+        "pp_ratio": float(pp_residue_count / denom),
+        "pp_mode_penalty": float(pp_mode_penalty),
+        "vanilla_enable_tta_score_threshold": float(vanilla_enable_tta_score_threshold),
+        "vanilla_min_score_gain": float(vanilla_min_score_gain),
+        "vanilla_pp_min_score": float(vanilla_pp_min_score),
+        "vanilla_exact_min_score": float(vanilla_exact_min_score),
+        "vanilla_available": True,
+    }
     return (
         tta_output._replace(best_match_output=merged_output),
         np.asarray(use_tta, dtype=bool),
+        selected_debug,
+        summary,
     )
-
 
 
 
@@ -753,10 +1008,30 @@ def _select_best_na_pp_rescue_output(
     pp_dna_output,
     seqs_is_dna,
     *,
-    exact_match_score_threshold=0.20,
-    pp_match_score_threshold=0.45,
-    min_score_gain=0.10,
+    source_label="tta",
+    exact_match_score_threshold=0.50,
+    pp_match_score_threshold=0.70,
+    min_score_gain=0.20,
+    corroboration_debug_records=None,
+    corroboration_score_threshold=0.65,
 ):
+    disable_pp_rescue = _disable_na_pp_rescue()
+    if disable_pp_rescue:
+        print(f"# NA PP rescue disabled by env for source={source_label}")
+    enable_moderate_rescue = _enable_na_pp_moderate_rescue()
+    moderate_exact_threshold = _na_pp_moderate_exact_threshold()
+    moderate_score_threshold = _na_pp_moderate_score_threshold()
+    moderate_min_gain = _na_pp_moderate_min_gain()
+    if enable_moderate_rescue:
+        print(
+            "# NA moderate PP rescue enabled for source={} exact<thr {:.3f} pp>=thr {:.3f} gain>=thr {:.3f}".format(
+                source_label,
+                moderate_exact_threshold,
+                moderate_score_threshold,
+                moderate_min_gain,
+            )
+        )
+
     selected = {
         "new_sequences": [],
         "residue_idxs": [],
@@ -769,6 +1044,7 @@ def _select_best_na_pp_rescue_output(
         "is_nucleotide": [],
     }
     use_pp = []
+    debug_records = []
 
     exact_match = exact_output.best_match_output
     if pp_rna_output is not None and len(exact_output.chains) != len(pp_rna_output.chains):
@@ -792,17 +1068,48 @@ def _select_best_na_pp_rescue_output(
                 label = "RNA"
 
         take_pp = False
+        pp_score = None
+        pp_seq_idx = None
+        corroboration_support = None
         if pp_match is not None:
             pp_score = float(pp_match.match_scores[chain_idx])
+            pp_seq_idx = int(pp_match.sequence_idxs[chain_idx])
             take_pp = (
-                exact_score < exact_match_score_threshold
+                (not disable_pp_rescue)
+                and exact_score < exact_match_score_threshold
                 and pp_score >= pp_match_score_threshold
                 and (pp_score - exact_score) >= min_score_gain
             )
-        else:
-            pp_score = float('nan')
+            corr_pp_score = None
+            if corroboration_debug_records is not None and chain_idx < len(corroboration_debug_records):
+                corr = corroboration_debug_records[chain_idx]
+                corr_exact = corr.get("exact_score")
+                corr_pp = corr.get("pp_score")
+                corr_best = max(
+                    float(corr_exact) if corr_exact is not None else -1.0,
+                    float(corr_pp) if corr_pp is not None else -1.0,
+                )
+                corr_pp_score = float(corr_pp) if corr_pp is not None else None
+                if take_pp:
+                    corroboration_support = corr_best
+                    if corr_best < corroboration_score_threshold:
+                        take_pp = False
+            if (
+                (not take_pp)
+                and enable_moderate_rescue
+                and corroboration_debug_records is not None
+                and exact_score < moderate_exact_threshold
+                and pp_score >= moderate_score_threshold
+                and (pp_score - exact_score) >= moderate_min_gain
+                and corr_pp_score is not None
+                and corr_pp_score >= moderate_score_threshold
+            ):
+                take_pp = True
+                corroboration_support = corr_pp_score
 
-        chosen = pp_match if take_pp else exact_match
+        chosen = pp_match if take_pp and pp_match is not None else exact_match
+        chosen_raw_score = float(chosen.match_scores[chain_idx])
+        chosen_mode = "pp" if take_pp else "exact"
         use_pp.append(take_pp)
         selected["new_sequences"].append(chosen.new_sequences[chain_idx])
         selected["residue_idxs"].append(chosen.residue_idxs[chain_idx])
@@ -813,10 +1120,35 @@ def _select_best_na_pp_rescue_output(
         selected["hmm_output_match_sequences"].append(chosen.hmm_output_match_sequences[chain_idx])
         selected["exists_in_sequence_mask"].append(chosen.exists_in_sequence_mask[chain_idx])
         selected["is_nucleotide"].append(chosen.is_nucleotide[chain_idx])
-        if take_pp:
+        debug_records.append({
+            "chain_idx": int(chain_idx),
+            "source": source_label,
+            "sequence_label": label,
+            "exact_score": float(exact_score),
+            "pp_score": None if pp_score is None else float(pp_score),
+            "exact_sequence_idx": int(exact_seq_idx),
+            "pp_sequence_idx": None if pp_seq_idx is None else int(pp_seq_idx),
+            "chosen_mode": chosen_mode,
+            "chosen_raw_score": float(chosen_raw_score),
+            "chosen_effective_score": float(chosen_raw_score),
+            "pp_used": bool(take_pp),
+            "pp_disabled": bool(disable_pp_rescue),
+            "corroboration_support": None if corroboration_support is None else float(corroboration_support),
+            "corroboration_score_threshold": float(corroboration_score_threshold),
+            "moderate_rescue_enabled": bool(enable_moderate_rescue),
+            "moderate_exact_threshold": float(moderate_exact_threshold),
+            "moderate_score_threshold": float(moderate_score_threshold),
+            "moderate_min_gain": float(moderate_min_gain),
+        })
+        if take_pp and pp_score is not None:
             print(
-                "# NA PP rescue chain={} type={} exact_match_score={:.4f} pp_match_score={:.4f}"
-                .format(chain_idx, label, exact_score, pp_score)
+                "# NA PP rescue chain={} source={} type={} exact_match_score={:.4f} pp_match_score={:.4f}".format(
+                    chain_idx,
+                    source_label,
+                    label,
+                    exact_score,
+                    pp_score,
+                )
             )
 
     merged_output = MatchToSequence(
@@ -830,7 +1162,9 @@ def _select_best_na_pp_rescue_output(
         exists_in_sequence_mask=selected["exists_in_sequence_mask"],
         is_nucleotide=selected["is_nucleotide"],
     )
-    return exact_output._replace(best_match_output=merged_output), np.asarray(use_pp, dtype=bool)
+    return exact_output._replace(best_match_output=merged_output), np.asarray(use_pp, dtype=bool), debug_records
+
+
 
 def _build_na_chain_outputs(
     reordered_final_results,
@@ -886,7 +1220,7 @@ def _build_na_chain_outputs(
     chains_prot_mask = [np.zeros(len(chain), dtype=bool) for chain in na_chains]
     chains_aa_logits = [reordered_final_results["pred_aatype"][chain] for chain in na_chains]
 
-    fix_chains_output = fix_chains_pipeline(
+    tta_exact_output = fix_chains_pipeline(
         prot_sequences=[],
         rna_sequences=rna_seqs_sanitized,
         dna_sequences=dna_seqs_sanitized,
@@ -899,69 +1233,159 @@ def _build_na_chain_outputs(
         postprocess=False,
         do_pp=False,
     )
-    vanilla_chain_logits = _sample_vanilla_na_chain_logits(
-        reordered_final_results,
-        fix_chains_output.chains,
-        na_aa_logits_data,
-    )
-    if vanilla_chain_logits is not None:
-        vanilla_fix_chains_output = fix_chains_pipeline(
-            prot_sequences=[],
-            rna_sequences=rna_seqs_sanitized,
-            dna_sequences=dna_seqs_sanitized,
-            chains=na_chains,
-            chain_aa_logits=vanilla_chain_logits,
-            ca_pos=ca_pos,
-            chain_prot_mask=chains_prot_mask,
-            chain_confidences=None,
-            base_dir=hmm_temp_dir,
-            postprocess=False,
-            do_pp=False,
-        )
-        fix_chains_output, _ = _select_best_na_match_output(
-            fix_chains_output,
-            vanilla_fix_chains_output,
-            fix_chains_output.chains,
-        )
-
-    pp_chain_logits = [reordered_final_results["pred_aatype"][chain] for chain in fix_chains_output.chains]
-    pp_chain_masks = [np.zeros(len(chain), dtype=bool) for chain in fix_chains_output.chains]
-    pp_rna_fix_chains_output = None
-    pp_dna_fix_chains_output = None
+    tta_pp_chain_logits = [reordered_final_results["pred_aatype"][chain] for chain in tta_exact_output.chains]
+    tta_pp_chain_masks = [np.zeros(len(chain), dtype=bool) for chain in tta_exact_output.chains]
+    tta_pp_rna_output = None
+    tta_pp_dna_output = None
     if len(rna_seqs_sanitized) > 0:
-        pp_rna_fix_chains_output = fix_chains_pipeline(
+        tta_pp_rna_output = fix_chains_pipeline(
             prot_sequences=[],
             rna_sequences=rna_seqs_sanitized,
             dna_sequences=[],
-            chains=fix_chains_output.chains,
-            chain_aa_logits=pp_chain_logits,
+            chains=tta_exact_output.chains,
+            chain_aa_logits=tta_pp_chain_logits,
             ca_pos=ca_pos,
-            chain_prot_mask=pp_chain_masks,
+            chain_prot_mask=tta_pp_chain_masks,
             chain_confidences=None,
             base_dir=hmm_temp_dir,
             postprocess=False,
             do_pp=True,
         )
     if len(dna_seqs_sanitized) > 0:
-        pp_dna_fix_chains_output = fix_chains_pipeline(
+        tta_pp_dna_output = fix_chains_pipeline(
             prot_sequences=[],
             rna_sequences=[],
             dna_sequences=dna_seqs_sanitized,
-            chains=fix_chains_output.chains,
-            chain_aa_logits=pp_chain_logits,
+            chains=tta_exact_output.chains,
+            chain_aa_logits=tta_pp_chain_logits,
             ca_pos=ca_pos,
-            chain_prot_mask=pp_chain_masks,
+            chain_prot_mask=tta_pp_chain_masks,
             chain_confidences=None,
             base_dir=hmm_temp_dir,
             postprocess=False,
             do_pp=True,
         )
-    fix_chains_output, _ = _select_best_na_pp_rescue_output(
-        fix_chains_output,
-        pp_rna_fix_chains_output,
-        pp_dna_fix_chains_output,
+    tta_best_output, tta_use_pp, tta_debug_records = _select_best_na_pp_rescue_output(
+        tta_exact_output,
+        tta_pp_rna_output,
+        tta_pp_dna_output,
         seqs_is_dna,
+        source_label="tta",
     )
+    tta_mode_summary = _summarize_na_mode_selection(tta_debug_records, tta_best_output.chains)
+    print("# NA TTA exact score = {:.4f}".format(float(np.sum(tta_exact_output.best_match_output.match_scores))))
+    print("# NA TTA selected score = {:.4f}".format(float(np.sum(tta_best_output.best_match_output.match_scores))))
+    print(
+        "# NA TTA exact ratio = {:.4f} PP ratio = {:.4f}".format(
+            tta_mode_summary["exact_ratio"],
+            tta_mode_summary["pp_ratio"],
+        )
+    )
+
+    vanilla_exact_output = None
+    vanilla_best_output = None
+    vanilla_debug_records = None
+    vanilla_mode_summary = None
+    vanilla_chain_logits = _sample_vanilla_na_chain_logits(
+        reordered_final_results,
+        tta_exact_output.chains,
+        na_aa_logits_data,
+    )
+    if vanilla_chain_logits is not None:
+        vanilla_exact_output = fix_chains_pipeline(
+            prot_sequences=[],
+            rna_sequences=rna_seqs_sanitized,
+            dna_sequences=dna_seqs_sanitized,
+            chains=tta_best_output.chains,
+            chain_aa_logits=vanilla_chain_logits,
+            ca_pos=ca_pos,
+            chain_prot_mask=[np.zeros(len(chain), dtype=bool) for chain in tta_best_output.chains],
+            chain_confidences=None,
+            base_dir=hmm_temp_dir,
+            postprocess=False,
+            do_pp=False,
+        )
+        vanilla_pp_chain_logits = _sample_vanilla_na_chain_logits(
+            reordered_final_results,
+            vanilla_exact_output.chains,
+            na_aa_logits_data,
+        )
+        vanilla_pp_chain_masks = [np.zeros(len(chain), dtype=bool) for chain in vanilla_exact_output.chains]
+        vanilla_pp_rna_output = None
+        vanilla_pp_dna_output = None
+        if vanilla_pp_chain_logits is not None and len(rna_seqs_sanitized) > 0:
+            vanilla_pp_rna_output = fix_chains_pipeline(
+                prot_sequences=[],
+                rna_sequences=rna_seqs_sanitized,
+                dna_sequences=[],
+                chains=vanilla_exact_output.chains,
+                chain_aa_logits=vanilla_pp_chain_logits,
+                ca_pos=ca_pos,
+                chain_prot_mask=vanilla_pp_chain_masks,
+                chain_confidences=None,
+                base_dir=hmm_temp_dir,
+                postprocess=False,
+                do_pp=True,
+            )
+        if vanilla_pp_chain_logits is not None and len(dna_seqs_sanitized) > 0:
+            vanilla_pp_dna_output = fix_chains_pipeline(
+                prot_sequences=[],
+                rna_sequences=[],
+                dna_sequences=dna_seqs_sanitized,
+                chains=vanilla_exact_output.chains,
+                chain_aa_logits=vanilla_pp_chain_logits,
+                ca_pos=ca_pos,
+                chain_prot_mask=vanilla_pp_chain_masks,
+                chain_confidences=None,
+                base_dir=hmm_temp_dir,
+                postprocess=False,
+                do_pp=True,
+            )
+        vanilla_best_output, vanilla_use_pp, vanilla_debug_records = _select_best_na_pp_rescue_output(
+            vanilla_exact_output,
+            vanilla_pp_rna_output,
+            vanilla_pp_dna_output,
+            seqs_is_dna,
+            source_label="vanilla",
+        )
+        if _require_vanilla_support_for_na_pp():
+            support_threshold = _na_pp_vanilla_support_threshold()
+            print(f"# Require vanilla support for TTA PP rescue = True threshold={support_threshold:.3f}")
+            tta_best_output, tta_use_pp, tta_debug_records = _select_best_na_pp_rescue_output(
+                tta_exact_output,
+                tta_pp_rna_output,
+                tta_pp_dna_output,
+                seqs_is_dna,
+                source_label="tta",
+                corroboration_debug_records=vanilla_debug_records,
+                corroboration_score_threshold=support_threshold,
+            )
+            tta_mode_summary = _summarize_na_mode_selection(tta_debug_records, tta_best_output.chains)
+            print("# NA TTA selected score (with vanilla corroboration) = {:.4f}".format(float(np.sum(tta_best_output.best_match_output.match_scores))))
+            print(
+                "# NA TTA exact ratio = {:.4f} PP ratio = {:.4f} (with vanilla corroboration)".format(
+                    tta_mode_summary["exact_ratio"],
+                    tta_mode_summary["pp_ratio"],
+                )
+            )
+        vanilla_mode_summary = _summarize_na_mode_selection(vanilla_debug_records, vanilla_best_output.chains)
+        print("# NA vanilla exact score = {:.4f}".format(float(np.sum(vanilla_exact_output.best_match_output.match_scores))))
+        print("# NA vanilla selected score = {:.4f}".format(float(np.sum(vanilla_best_output.best_match_output.match_scores))))
+        print(
+            "# NA vanilla exact ratio = {:.4f} PP ratio = {:.4f}".format(
+                vanilla_mode_summary["exact_ratio"],
+                vanilla_mode_summary["pp_ratio"],
+            )
+        )
+
+    fix_chains_output, use_tta, na_alignment_debug_records, na_alignment_summary = _select_best_na_match_output(
+        tta_best_output,
+        vanilla_best_output,
+        tta_best_output.chains,
+        tta_debug_records=tta_debug_records,
+        vanilla_debug_records=vanilla_debug_records,
+    )
+    del use_tta
 
     predicted_chain_types = _predict_na_chain_types(
         reordered_final_results,
@@ -1059,6 +1483,43 @@ def _build_na_chain_outputs(
         before_fallback_masks,
         min_chain_len,
     )
+
+    keep_chain_indices = {
+        int(chain_idx)
+        for chain_idx, chain in enumerate(before_chains)
+        if len(chain) >= min_chain_len
+    }
+    for chain_idx, record in enumerate(na_alignment_debug_records):
+        record["final_sequence_idx_after_fix_match"] = int(fixed_match.sequence_idxs[chain_idx])
+        record["final_match_score_after_fix_match"] = float(fixed_match.match_scores[chain_idx])
+        record["has_valid_sequence_after_fix_match"] = bool(0 <= fixed_match.sequence_idxs[chain_idx] < len(seqs))
+        record["fallback_used"] = bool(before_fallback_masks[chain_idx].any())
+        record["kept_after_length_filter"] = bool(chain_idx in keep_chain_indices)
+        record["final_chain_len"] = int(len(before_chains[chain_idx]))
+
+    na_alignment_payload = {
+        "summary": {
+            **na_alignment_summary,
+            "tta_exact_score_sum": float(np.sum(tta_exact_output.best_match_output.match_scores)),
+            "tta_selected_score_sum": float(np.sum(tta_best_output.best_match_output.match_scores)),
+            "tta_exact_ratio": float(tta_mode_summary["exact_ratio"]),
+            "tta_pp_ratio": float(tta_mode_summary["pp_ratio"]),
+            "vanilla_exact_score_sum": None if vanilla_exact_output is None else float(np.sum(vanilla_exact_output.best_match_output.match_scores)),
+            "vanilla_selected_score_sum": None if vanilla_best_output is None else float(np.sum(vanilla_best_output.best_match_output.match_scores)),
+            "vanilla_exact_ratio": None if vanilla_mode_summary is None else float(vanilla_mode_summary["exact_ratio"]),
+            "vanilla_pp_ratio": None if vanilla_mode_summary is None else float(vanilla_mode_summary["pp_ratio"]),
+            "fallback_chain_count": int(num_fallback_chains),
+            "before_chain_count": int(len(before_chains)),
+            "after_chain_count": int(len(after_chains)),
+            "min_chain_len": int(min_chain_len),
+            "fallback_to_predicted_na_types": bool(fallback_to_predicted_na_types),
+            "seqs_is_all_same": bool(seqs_is_all_same),
+        },
+        "chains": na_alignment_debug_records,
+    }
+    na_alignment_debug_path = os.path.join(hmm_temp_dir, "na_alignment_selection.json")
+    _write_json(na_alignment_debug_path, na_alignment_payload)
+
     return (
         before_chains,
         before_chain_types,

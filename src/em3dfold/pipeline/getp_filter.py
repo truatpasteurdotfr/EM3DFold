@@ -249,7 +249,7 @@ def grid_to_points(
     timing["g2p_grid_prune_rounds"] = time.perf_counter() - t_stage
 
     t_stage = time.perf_counter()
-    if len(points) > 0:
+    if len(points) > 0 and neighbour_distance_threshold > 0.0:
         kdtree = cKDTree(points)
         distances, _ = kdtree.query(points, k=2)
         points = points[distances[:, 1] <= neighbour_distance_threshold].reshape(-1, 3)
@@ -676,7 +676,7 @@ def main(args):
         points, _, grid_to_points_timing = grid_to_points(
             data,
             args.ratio,
-            6.0,
+            float(getattr(args, "g2p_neighbor_distance_threshold", 6.0)),
             prune_distance=1.5,
             return_timing=True,
         )
@@ -898,6 +898,12 @@ def add_args(parser):
         type=int,
         default=None,
         help="Optional cap on the number of retained g2p supplement points",
+    )
+    parser.add_argument(
+        "--g2p-neighbor-distance-threshold",
+        type=float,
+        default=6.0,
+        help="Distance-based g2p seed filter threshold; disabled when <= 0",
     )
     parser.add_argument(
         "--component-link-distance",

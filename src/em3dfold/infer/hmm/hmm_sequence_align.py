@@ -1,3 +1,4 @@
+import math
 from collections import namedtuple
 from itertools import count
 import json
@@ -6,6 +7,7 @@ from typing import List, Tuple
 
 import numpy as np
 import pyhmmer
+import torch
 
 from em3dfold.infer.hmm.match_to_sequence import MatchToSequence
 from em3dfold.infer.hmm.aa_probs_to_hmm import aa_logits_to_hmm, alphabet_to_index
@@ -65,6 +67,21 @@ def _write_hmm_alignment_debug(base_dir: str, payload: dict) -> None:
         json.dump(_jsonable(payload), handle, indent=2)
 
 
+def _disable_na_logits_aware_msa_score() -> bool:
+    flag = os.environ.get("EM3DFOLD_NA_DISABLE_LOGITS_AWARE_MSA_SCORE", "")
+    return flag.lower() in {"1", "true", "yes", "on"}
+
+
+def _disable_na_hmm_logit_scale() -> bool:
+    flag = os.environ.get("EM3DFOLD_NA_DISABLE_HMM_LOGIT_SCALE", "")
+    return flag.lower() in {"1", "true", "yes", "on"}
+
+
+def _disable_na_hmm_logit_scale_exact_only() -> bool:
+    flag = os.environ.get("EM3DFOLD_NA_DISABLE_HMM_LOGIT_SCALE_EXACT_ONLY", "")
+    return flag.lower() in {"1", "true", "yes", "on"}
+
+
 def expand_shared_na_logits_to_full_vocab(aa_logits: np.ndarray) -> np.ndarray:
     if aa_logits.shape[-1] == num_prot + 8:
         return aa_logits
@@ -82,6 +99,61 @@ def expand_shared_na_logits_to_full_vocab(aa_logits: np.ndarray) -> np.ndarray:
     expanded[..., num_prot : num_prot + 4] = aa_logits[..., num_prot:]
     expanded[..., num_prot + 4 :] = aa_logits[..., num_prot:]
     return expanded
+
+
+def get_na_processed_msa_scores(
+    aa_logits: np.ndarray,
+    na_processed_msas: List[str],
+    raw_na_sequences: List[str],
+    alphabet_type: str,
+) -> np.ndarray:
+    assert alphabet_type in {"RNA", "DNA"}
+    restype_temp_dict = {"A": 0, "C": 1, "G": 2, "U": 3, "T": 3}
+    aa_probs = torch.from_numpy(aa_logits).softmax(dim=-1).numpy()
+    if alphabet_type == "RNA":
+        aa_probs = aa_probs[:, num_prot + 4 : num_prot + 8]
+    else:
+        aa_probs = aa_probs[:, num_prot : num_prot + 4]
+
+    scores = []
+    for msa_idx, msa in enumerate(na_processed_msas):
+        score = 0.0
+        start_match, end_match, num_gaps_to_start = find_match_range(msa)
+        seq_pos = start_match - num_gaps_to_start + 1
+        pred_pos = 0
+        original_seq = raw_na_sequences[msa_idx]
+        for token in msa[start_match : end_match + 1]:
+            if token in sequence_match:
+                if token.isalpha():
+                    score += float(
+                        aa_probs[pred_pos, restype_temp_dict[original_seq[seq_pos - 1]]]
+                    )
+                pred_pos += 1
+            if token in in_seq_dict:
+                seq_pos += 1
+        scores.append(score)
+    return np.asarray(scores, dtype=np.float32)
+
+
+def get_aa_from_aalogits(aa_logits: np.ndarray, match_type: str = "") -> np.ndarray:
+    aa_probs = np.exp(aa_logits - np.max(aa_logits, axis=-1, keepdims=True))
+    aa_probs /= aa_probs.sum(axis=-1, keepdims=True)
+    if match_type == "":
+        if np.sum(aa_probs[:, num_prot : num_prot + 4]) > np.sum(
+            aa_probs[:, num_prot + 4 : num_prot + 8]
+        ):
+            match_type = "DNA"
+        else:
+            match_type = "RNA"
+    na_logits = np.maximum(
+        aa_logits[:, num_prot : num_prot + 4],
+        aa_logits[:, num_prot + 4 : num_prot + 8],
+    )
+    if match_type == "DNA":
+        return np.argmax(na_logits, axis=-1) + num_prot
+    if match_type == "RNA":
+        return np.argmax(na_logits, axis=-1) + (num_prot + 4)
+    raise ValueError(f"Unsupported match_type: {match_type}")
 
 
 def get_hmm_alignment(
@@ -129,9 +201,16 @@ def get_hmm_alignment(
         match_type = ""
         rna_match_lengths = []
         dna_match_lengths = []
+        rna_processed_msa_scores = []
+        dna_processed_msa_scores = []
+        disable_logits_aware_msa_score = _disable_na_logits_aware_msa_score()
+        disable_na_hmm_logit_scale = _disable_na_hmm_logit_scale()
+        disable_na_hmm_logit_scale_exact_only = _disable_na_hmm_logit_scale_exact_only()
+        disable_scale_this_run = disable_na_hmm_logit_scale or (disable_na_hmm_logit_scale_exact_only and (not do_pp))
+        na_hmm_logits = aa_logits if disable_scale_this_run else aa_logits * math.log(8, 4)
         if has_rna_seq:
             hmm_rna = aa_logits_to_hmm(
-                aa_logits,
+                na_hmm_logits,
                 confidence=confidence,
                 base_dir=base_dir,
                 alphabet_type="RNA" if not do_pp else "PP",
@@ -140,11 +219,21 @@ def get_hmm_alignment(
                 hmm_rna, digital_rna_sequences, all_consensus_cols=True
             ).alignment
             rna_match_lengths = np.array([len(remove_non_residue(x)) for x in rna_processed_msas])
-            rna_seq_idx = np.argmax(rna_match_lengths)
-            rna_seq_val = np.max(rna_match_lengths)
+            rna_processed_msa_scores = get_na_processed_msa_scores(
+                aa_logits=aa_logits,
+                na_processed_msas=rna_processed_msas,
+                raw_na_sequences=raw_rna_sequences,
+                alphabet_type="RNA",
+            )
+            if disable_logits_aware_msa_score:
+                rna_seq_idx = int(np.argmax(rna_match_lengths))
+                rna_seq_val = float(np.max(rna_match_lengths))
+            else:
+                rna_seq_idx = int(np.argmax(rna_processed_msa_scores))
+                rna_seq_val = float(np.max(rna_processed_msa_scores))
         if has_dna_seq:
             hmm_dna = aa_logits_to_hmm(
-                aa_logits,
+                na_hmm_logits,
                 confidence=confidence,
                 base_dir=base_dir,
                 alphabet_type="DNA" if not do_pp else "PP",
@@ -153,13 +242,20 @@ def get_hmm_alignment(
                 hmm_dna, digital_dna_sequences, all_consensus_cols=True
             ).alignment
             dna_match_lengths = np.array([len(remove_non_residue(x)) for x in dna_processed_msas])
-            dna_seq_idx = np.argmax(dna_match_lengths)
-            dna_seq_val = np.max(dna_match_lengths)
-        if has_rna_seq and has_dna_seq:
-            if rna_seq_val <= dna_seq_val:
-                match_type = "RNA"
+            dna_processed_msa_scores = get_na_processed_msa_scores(
+                aa_logits=aa_logits,
+                na_processed_msas=dna_processed_msas,
+                raw_na_sequences=raw_dna_sequences,
+                alphabet_type="DNA",
+            )
+            if disable_logits_aware_msa_score:
+                dna_seq_idx = int(np.argmax(dna_match_lengths))
+                dna_seq_val = float(np.max(dna_match_lengths))
             else:
-                match_type = "DNA"
+                dna_seq_idx = int(np.argmax(dna_processed_msa_scores))
+                dna_seq_val = float(np.max(dna_processed_msa_scores))
+        if has_rna_seq and has_dna_seq:
+            match_type = "DNA" if rna_seq_val <= dna_seq_val else "RNA"
         elif has_rna_seq:
             match_type = "RNA"
         elif has_dna_seq:
@@ -167,27 +263,28 @@ def get_hmm_alignment(
 
         debug_payload.update({
             "match_type": match_type,
+            "na_candidate_selection": "match_length" if disable_logits_aware_msa_score else "processed_msa_score",
+            "na_hmm_logit_scale": (
+                "disabled"
+                if disable_na_hmm_logit_scale
+                else ("disabled_exact_only" if disable_na_hmm_logit_scale_exact_only else "log8_over_4")
+            ),
             "rna_match_lengths": rna_match_lengths.tolist() if len(rna_match_lengths) else [],
             "dna_match_lengths": dna_match_lengths.tolist() if len(dna_match_lengths) else [],
+            "rna_processed_msa_scores": rna_processed_msa_scores.tolist() if len(rna_processed_msa_scores) else [],
+            "dna_processed_msa_scores": dna_processed_msa_scores.tolist() if len(dna_processed_msa_scores) else [],
             "selected_rna_index": int(rna_seq_idx) if has_rna_seq else None,
             "selected_dna_index": int(dna_seq_idx) if has_dna_seq else None,
+            "selected_rna_value": float(rna_seq_val) if has_rna_seq else None,
+            "selected_dna_value": float(dna_seq_val) if has_dna_seq else None,
         })
-
-        pred_rna_seq = np.argmax(aa_logits[..., num_prot + 4 : num_prot + 8], axis=-1) + (num_prot + 4)
-        pred_dna_seq = np.argmax(aa_logits[..., num_prot : num_prot + 4], axis=-1) + num_prot
-        pred_na_seq = np.where(
-            np.max(aa_logits[..., num_prot : num_prot + 4], axis=-1)
-            >= np.max(aa_logits[..., num_prot + 4 : num_prot + 8], axis=-1),
-            pred_dna_seq,
-            pred_rna_seq,
-        )
 
         if match_type == "":
             made_up_match = "-" * len(aa_logits)
             msa_index_corr = get_msa_index_correspondence(made_up_match)
             index_dict = alphabet_to_index["RNA"]
             seq_idx = len(digital_prot_sequences)
-            original_pred_seq = pred_na_seq
+            original_pred_seq = get_aa_from_aalogits(aa_logits, match_type)
         elif match_type == "RNA":
             original_seq = None if not do_pp else raw_rna_sequences[rna_seq_idx]
             msa_index_corr = get_msa_index_correspondence(
@@ -195,7 +292,7 @@ def get_hmm_alignment(
             )
             index_dict = alphabet_to_index["RNA"]
             seq_idx = rna_seq_idx + len(digital_prot_sequences)
-            original_pred_seq = pred_rna_seq
+            original_pred_seq = get_aa_from_aalogits(aa_logits, match_type)
         elif match_type == "DNA":
             original_seq = None if not do_pp else raw_dna_sequences[dna_seq_idx]
             msa_index_corr = get_msa_index_correspondence(
@@ -205,7 +302,7 @@ def get_hmm_alignment(
             seq_idx = (
                 dna_seq_idx + len(digital_prot_sequences) + len(digital_rna_sequences)
             )
-            original_pred_seq = pred_dna_seq
+            original_pred_seq = get_aa_from_aalogits(aa_logits, match_type)
         match_sequence = msa_index_corr.sequence
 
     msa_sequence = np.array(

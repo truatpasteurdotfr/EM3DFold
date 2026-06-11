@@ -383,7 +383,7 @@ def add_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     parser.add_argument("--ckpt", "-k", type=str, required=True, help="Lightning checkpoint (.ckpt) for the 4-class NA-type model")
     parser.add_argument("--device", "-g", type=str, default="0", help="Which device(s) to use, e.g. '0', 'cpu', or '0,1'")
     parser.add_argument("--batchsize", "-b", type=int, default=40, help="Per-device batch size for prediction")
-    parser.add_argument("--stride", "-s", type=int, default=16, help="Stride for sliding-window inference")
+    parser.add_argument("--stride", "-s", type=int, default=24, help="Stride for sliding-window inference")
     parser.add_argument("--box-size", type=int, default=48, help="Patch size for sliding-window inference")
     parser.add_argument("--apix", type=float, default=1.0, help="Override voxel size used by parse_map")
     parser.add_argument("--normalize-percentile", type=float, default=99.999, help="Positive-density percentile used for 0-1 normalization")

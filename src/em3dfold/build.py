@@ -165,6 +165,7 @@ def _run_getp_pipeline(
     ratio=0.05,
     run_getp=True,
     run_g2p=False,
+    g2p_neighbor_distance_threshold=6.0,
     component_link_distance=0.0,
     component_min_size=0,
     component_min_fraction_largest=0.0,
@@ -191,6 +192,7 @@ def _run_getp_pipeline(
     getp_args.dmerge = dmerge
     getp_args.rmax = rmax
     getp_args.fuse_g2p = True
+    getp_args.g2p_neighbor_distance_threshold = g2p_neighbor_distance_threshold
     getp_args.g2p_cover_distance = 1.75
     getp_args.g2p_supplement_merge_distance = 1.5
     getp_args.g2p_refine_radius = 1.5
@@ -815,6 +817,7 @@ def main(args):
                     thresh=8.0,
                     run_getp=True,
                     run_g2p=False,
+                    g2p_neighbor_distance_threshold=0.0,
                 )
                 end = time.time()
                 print("# Time = {:.4f}".format(end - start))
