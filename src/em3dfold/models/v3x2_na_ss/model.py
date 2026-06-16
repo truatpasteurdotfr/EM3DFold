@@ -3,7 +3,6 @@ import contextlib
 import torch
 import torch.nn as nn
 
-from em3dfold.models.modules import SinusoidalPositionalEncoding
 from em3dfold.models.v2.model_refresh import Output
 from em3dfold.models.v3x2.model import Model as V3X2Model
 
@@ -11,24 +10,71 @@ from em3dfold.models.v3x2.model import Model as V3X2Model
 class Model(V3X2Model):
     def __init__(
         self,
-        *args,
-        pred_na_type=False,
-        use_edge_pairing_input=True,
-        use_index_pos=True,
-        node_pos_enc_dim=16,
-        edge_pos_enc_dim=16,
-        max_rel_res_offset=64,
-        residue_pos_scale=32.0,
-        **kwargs,
+        d_node=256,
+        d_edge=256,
+        d_head=48,
+        d_seq=1280,
+        d_seq_na=1280,
+        n_qk_point=4,
+        n_v_point=8,
+        n_head=8,
+        n_block=12,
+        k=32,
+        p_drop=0.10,
+        c_grid=1,
+        pred_node_exist=False,
+        pred_edge_exist=True,
+        pred_pairing=False,
+        pred_ss=True,
+        pred_na_type=True,
+        use_predicted_pairing_feedback=True,
+        use_checkpoint=False,
+        use_seq_attn=True,
+        seq_attn_every=2,
+        geometry_update_every=4,
+        recycle_use_full_structure=True,
+        d_cryo_emb=None,
+        cube_size=23,
+        rectangle_length=15,
+        cube_scunet_head_dim=16,
+        cube_scunet_window_size=3,
+        cube_scunet_drop_path=0.0,
+        cube_scunet_trans_ratio=0.25,
+        cube_scunet_max_trans_dim=128,
     ):
-        super().__init__(*args, **kwargs)
+        super().__init__(
+            d_node=d_node,
+            d_edge=d_edge,
+            d_head=d_head,
+            d_seq=d_seq,
+            d_seq_na=d_seq_na,
+            n_qk_point=n_qk_point,
+            n_v_point=n_v_point,
+            n_head=n_head,
+            n_block=n_block,
+            k=k,
+            p_drop=p_drop,
+            c_grid=c_grid,
+            pred_node_exist=pred_node_exist,
+            pred_edge_exist=pred_edge_exist,
+            pred_pairing=pred_pairing,
+            pred_ss=pred_ss,
+            use_checkpoint=use_checkpoint,
+            use_seq_attn=use_seq_attn,
+            seq_attn_every=seq_attn_every,
+            geometry_update_every=geometry_update_every,
+            recycle_use_full_structure=recycle_use_full_structure,
+            d_cryo_emb=d_cryo_emb,
+            cube_size=cube_size,
+            rectangle_length=rectangle_length,
+            cube_scunet_head_dim=cube_scunet_head_dim,
+            cube_scunet_window_size=cube_scunet_window_size,
+            cube_scunet_drop_path=cube_scunet_drop_path,
+            cube_scunet_trans_ratio=cube_scunet_trans_ratio,
+            cube_scunet_max_trans_dim=cube_scunet_max_trans_dim,
+        )
         self.pred_na_type = bool(pred_na_type)
-        self.use_edge_pairing_input = bool(use_edge_pairing_input)
-        self.use_index_pos = bool(use_index_pos)
-        self.node_pos_enc_dim = int(node_pos_enc_dim)
-        self.edge_pos_enc_dim = int(edge_pos_enc_dim)
-        self.max_rel_res_offset = int(max_rel_res_offset)
-        self.residue_pos_scale = float(residue_pos_scale)
+        self.use_predicted_pairing_feedback = bool(use_predicted_pairing_feedback)
 
         if self.pred_na_type:
             self.na_type_predictor = nn.Sequential(
@@ -39,106 +85,8 @@ class Model(V3X2Model):
                 nn.Linear(self.d_node, 2),
             )
 
-        if self.use_index_pos:
-            self.node_residue_pos_enc = SinusoidalPositionalEncoding(self.node_pos_enc_dim)
-            self.node_chain_pos_enc = SinusoidalPositionalEncoding(self.node_pos_enc_dim)
-            self.edge_relative_pos_enc = SinusoidalPositionalEncoding(self.edge_pos_enc_dim)
-            self.node_index_embed = nn.Linear(self.node_pos_enc_dim * 2 + 1, self.d_node, bias=False)
-            self.edge_index_embed = nn.Linear(self.edge_pos_enc_dim + 3, self.d_edge, bias=False)
-
-        if self.use_edge_pairing_input:
-            self.edge_pairing_embed = nn.Linear(2, self.d_edge, bias=False)
-
-    def _remap_chain_index(self, chain_index: torch.Tensor):
-        chain_index = chain_index.long()
-        remapped = torch.zeros_like(chain_index)
-        valid = chain_index >= 0
-        if valid.any():
-            unique_chain_ids = torch.unique(chain_index[valid], sorted=True)
-            for new_idx, chain_id in enumerate(unique_chain_ids.tolist(), start=1):
-                remapped[chain_index == int(chain_id)] = int(new_idx)
-        return remapped, valid
-
-    def _build_index_condition_features(self, chain_index, residue_index, edge_index, dtype, device):
-        if (not self.use_index_pos) or chain_index is None or residue_index is None:
-            n, k = edge_index.shape
-            return (
-                torch.zeros((n, self.d_node), device=device, dtype=dtype),
-                torch.zeros((n, k, self.d_edge), device=device, dtype=dtype),
-            )
-
-        chain_index = chain_index.to(device=device)
-        residue_index = residue_index.to(device=device)
-        remapped_chain, chain_valid = self._remap_chain_index(chain_index)
-
-        residue_scalar = residue_index.float().unsqueeze(-1) / self.residue_pos_scale
-        chain_scalar = remapped_chain.float().unsqueeze(-1)
-        residue_pos = self.node_residue_pos_enc(residue_scalar).flatten(1)
-        chain_pos = self.node_chain_pos_enc(chain_scalar).flatten(1)
-        node_cond = torch.cat(
-            [
-                residue_pos.to(dtype=dtype),
-                chain_pos.to(dtype=dtype),
-                chain_valid.float().unsqueeze(-1).to(dtype=dtype),
-            ],
-            dim=-1,
-        )
-        node_cond = self.node_index_embed(node_cond)
-
-        src_chain = remapped_chain[:, None]
-        dst_chain = remapped_chain[edge_index]
-        src_valid = chain_valid[:, None]
-        dst_valid = chain_valid[edge_index]
-        same_chain = src_valid & dst_valid & (src_chain == dst_chain)
-
-        rel_residue = residue_index[:, None] - residue_index[edge_index]
-        rel_residue = torch.where(same_chain, rel_residue, torch.zeros_like(rel_residue))
-        rel_residue = rel_residue.clamp(-self.max_rel_res_offset, self.max_rel_res_offset)
-        rel_residue_scalar = rel_residue.float().unsqueeze(-1) / self.residue_pos_scale
-        rel_residue_pos = self.edge_relative_pos_enc(rel_residue_scalar).reshape(rel_residue.shape[0], rel_residue.shape[1], -1)
-        edge_cond = torch.cat(
-            [
-                rel_residue_pos.to(dtype=dtype),
-                same_chain.float().unsqueeze(-1).to(dtype=dtype),
-                src_valid.float().expand_as(rel_residue).unsqueeze(-1).to(dtype=dtype),
-                dst_valid.float().unsqueeze(-1).to(dtype=dtype),
-            ],
-            dim=-1,
-        )
-        edge_cond = self.edge_index_embed(edge_cond)
-        return node_cond, edge_cond
-
-    def _build_edge_pairing_features(self, edge_pairing, edge_pairing_label, edge_index, dtype, device):
-        if (not self.use_edge_pairing_input) or edge_pairing is None:
-            n, k = edge_index.shape
-            return torch.zeros((n, k, self.d_edge), device=device, dtype=dtype)
-
-        edge_pairing = edge_pairing.to(device=device, dtype=dtype)
-        n, k = edge_index.shape
-        if edge_pairing.ndim == 1 and edge_pairing.shape[0] == n:
-            partner_index = edge_pairing.long()
-            valid_partner = partner_index >= 0
-            pairing_binary = (
-                (edge_index == partner_index[:, None]) & valid_partner[:, None]
-            ).to(dtype=dtype).unsqueeze(-1)
-            pairing_score = pairing_binary
-        elif edge_pairing.ndim == 2 and tuple(edge_pairing.shape) == (n, k):
-            pairing_score = edge_pairing.unsqueeze(-1)
-            if edge_pairing_label is None:
-                pairing_binary = (pairing_score > 0.0).to(dtype=dtype)
-            else:
-                pairing_binary = edge_pairing_label.to(device=device, dtype=dtype).unsqueeze(-1)
-        else:
-            row_idx = torch.arange(n, device=device)[:, None]
-            pairing_score = edge_pairing[row_idx, edge_index].unsqueeze(-1)
-            if edge_pairing_label is None:
-                pairing_binary = (pairing_score > 0.0).to(dtype=dtype)
-            elif edge_pairing_label.ndim == 2 and tuple(edge_pairing_label.shape) == (n, k):
-                pairing_binary = edge_pairing_label.to(device=device, dtype=dtype).unsqueeze(-1)
-            else:
-                pairing_binary = edge_pairing_label.to(device=device, dtype=dtype)[row_idx, edge_index].unsqueeze(-1)
-        pairing_feat = torch.cat([pairing_score, pairing_binary], dim=-1)
-        return self.edge_pairing_embed(pairing_feat)
+        if self.pred_pairing:
+            self.embed_cycle_pairing = nn.Linear(1, self.d_edge, bias=False)
 
     def forward(
         self,
@@ -154,13 +102,8 @@ class Model(V3X2Model):
         prev_aa_probs: torch.Tensor = None,
         prev_rmsd: torch.Tensor = None,
         prev_node: torch.Tensor = None,
-        edge_pairing: torch.Tensor = None,
-        edge_pairing_label: torch.Tensor = None,
-        chain_index: torch.Tensor = None,
-        residue_index: torch.Tensor = None,
         batch=None,
         run_iters=1,
-        **kwargs,
     ):
         if batch is None:
             batch = torch.zeros(len(affines), device=affines.device, dtype=torch.long)
@@ -173,21 +116,32 @@ class Model(V3X2Model):
         max_k = min(self.k, len(affines) - 1)
         init_edge = torch.zeros((len(affines), max_k, self.d_edge), device=affines.device)
         init_aa_logits = torch.zeros((len(affines), self.num_res_types), device=affines.device)
-        init_edge_aa_logits = torch.zeros((len(affines), max_k, self.num_res_types * self.num_res_types), device=affines.device)
+        init_edge_aa_logits = torch.zeros(
+            (len(affines), max_k, self.num_res_types * self.num_res_types),
+            device=affines.device,
+        )
+        init_pairing = torch.zeros((len(affines), max_k, 1), device=affines.device)
         init_rmsd = torch.zeros((len(affines), 1), device=affines.device)
+
         if prev_node is not None:
             if prev_node.shape != init_node.shape:
-                raise ValueError(f"prev_node must have shape {tuple(init_node.shape)}, got {tuple(prev_node.shape)}")
+                raise ValueError(
+                    f"prev_node must have shape {tuple(init_node.shape)}, got {tuple(prev_node.shape)}"
+                )
             init_node = prev_node.to(device=affines.device, dtype=init_node.dtype)
         if prev_aa_probs is not None:
             if prev_aa_probs.shape != init_aa_logits.shape:
-                raise ValueError(f"prev_aa_probs must have shape {tuple(init_aa_logits.shape)}, got {tuple(prev_aa_probs.shape)}")
+                raise ValueError(
+                    f"prev_aa_probs must have shape {tuple(init_aa_logits.shape)}, got {tuple(prev_aa_probs.shape)}"
+                )
             init_aa_logits = prev_aa_probs.to(device=affines.device, dtype=init_aa_logits.dtype)
         if prev_rmsd is not None:
             if prev_rmsd.shape == (len(affines),):
                 prev_rmsd = prev_rmsd[..., None]
             if prev_rmsd.shape != init_rmsd.shape:
-                raise ValueError(f"prev_rmsd must have shape {tuple(init_rmsd.shape)}, got {tuple(prev_rmsd.shape)}")
+                raise ValueError(
+                    f"prev_rmsd must have shape {tuple(init_rmsd.shape)}, got {tuple(prev_rmsd.shape)}"
+                )
             init_rmsd = prev_rmsd.to(device=affines.device, dtype=init_rmsd.dtype)
 
         fixed_edge_index = None
@@ -198,6 +152,11 @@ class Model(V3X2Model):
         pred_node_existence = None
         pred_edge_existence = None
         pred_pairing = None
+        rmsd = None
+        node = None
+        affines_list = []
+        torsion_list = []
+        bde_out = None
 
         for run_iter in range(run_iters):
             with torch.no_grad() if run_iter < run_iters - 1 else contextlib.nullcontext():
@@ -227,36 +186,33 @@ class Model(V3X2Model):
                 edge = edge + self.embed_cycle_edge(init_edge)
                 node = node + self.embed_cycle_aa(init_aa_logits)
                 edge = edge + self.embed_cycle_edge_aa(init_edge_aa_logits)
-                node_conf_feat, edge_conf_feat = self._build_confidence_features(init_rmsd, bde_out.edge_index)
+                if self.pred_pairing:
+                    edge = edge + self.embed_cycle_pairing(init_pairing)
+                node_conf_feat, edge_conf_feat = self._build_confidence_features(
+                    init_rmsd,
+                    bde_out.edge_index,
+                )
                 node = node + self.embed_cycle_conf(node_conf_feat)
                 edge = edge + self.embed_cycle_edge_conf(edge_conf_feat)
 
-                index_node_feat, index_edge_feat = self._build_index_condition_features(
-                    chain_index=chain_index,
-                    residue_index=residue_index,
-                    edge_index=bde_out.edge_index,
-                    dtype=node.dtype,
-                    device=node.device,
-                )
-                node = node + index_node_feat
-                edge = edge + index_edge_feat
-                edge = edge + self._build_edge_pairing_features(
-                    edge_pairing=edge_pairing,
-                    edge_pairing_label=edge_pairing_label,
-                    edge_index=bde_out.edge_index,
-                    dtype=edge.dtype,
-                    device=edge.device,
-                )
-
                 torsion_angles = None
-                edge = edge + self._compute_edge_bias(init_affines, torsion_angles, prot_mask, bde_out.edge_index)
+                edge = edge + self._compute_edge_bias(
+                    init_affines,
+                    torsion_angles,
+                    prot_mask,
+                    bde_out.edge_index,
+                )
 
                 affines_list = []
                 torsion_list = []
                 affines = init_affines
                 seq_attn_idx = 0
                 for i in range(self.n_block):
-                    do_seq_attn = self.use_seq_attn and self.seq_attn_every > 0 and ((i + 1) % self.seq_attn_every == 0)
+                    do_seq_attn = (
+                        self.use_seq_attn
+                        and self.seq_attn_every > 0
+                        and ((i + 1) % self.seq_attn_every == 0)
+                    )
                     do_geometry_update = self.blocks[i].enable_geometry_update
 
                     if do_seq_attn:
@@ -291,12 +247,19 @@ class Model(V3X2Model):
                             batch=batch,
                         )
                         if not self.has_intermediate_refresh:
-                            raise RuntimeError("Intermediate density refresh triggered without refresh modules.")
+                            raise RuntimeError(
+                                "Intermediate density refresh triggered without refresh modules."
+                            )
                         node_density_state = node_density_state + self.refresh_node_head_embed(node_density)
                         edge_density_state = edge_density_state + self.refresh_edge_head_embed(edge_density)
                         node = node + self.refresh_node_embed(node_density)
                         edge = edge + self.refresh_edge_embed(edge_density)
-                        edge = edge + self._compute_edge_bias(affines, torsion_angles, prot_mask, bde_out.edge_index)
+                        edge = edge + self._compute_edge_bias(
+                            affines,
+                            torsion_angles,
+                            prot_mask,
+                            bde_out.edge_index,
+                        )
 
                     if do_geometry_update:
                         affines_list.append(affines)
@@ -322,12 +285,28 @@ class Model(V3X2Model):
                     na_probs = torch.softmax(pred_aatype[..., 20:], dim=-1)
                     init_aa_logits = torch.zeros_like(pred_aatype)
                     prot_mask_bool = prot_mask.bool().unsqueeze(-1)
-                    init_aa_logits[..., :20] = torch.where(prot_mask_bool, prot_probs, torch.zeros_like(prot_probs))
-                    init_aa_logits[..., 20:] = torch.where(~prot_mask_bool, na_probs, torch.zeros_like(na_probs))
+                    init_aa_logits[..., :20] = torch.where(
+                        prot_mask_bool,
+                        prot_probs,
+                        torch.zeros_like(prot_probs),
+                    )
+                    init_aa_logits[..., 20:] = torch.where(
+                        ~prot_mask_bool,
+                        na_probs,
+                        torch.zeros_like(na_probs),
+                    )
                     init_edge_aa_logits = torch.softmax(
-                        pred_edge_aa_logits.reshape(pred_edge_aa_logits.shape[0], pred_edge_aa_logits.shape[1], -1),
+                        pred_edge_aa_logits.reshape(
+                            pred_edge_aa_logits.shape[0],
+                            pred_edge_aa_logits.shape[1],
+                            -1,
+                        ),
                         dim=-1,
                     )
+                    if self.pred_pairing and self.use_predicted_pairing_feedback:
+                        init_pairing = torch.sigmoid(pred_pairing)
+                    else:
+                        init_pairing = torch.zeros_like(init_pairing)
                     init_rmsd = rmsd
 
         output = Output(
