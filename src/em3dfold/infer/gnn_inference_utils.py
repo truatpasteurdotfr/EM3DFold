@@ -152,6 +152,11 @@ def init_empty_collate_results(
         num_predicted_residues, 24, device=device
     )
 
+    # DNA/RNA logits
+    result["pred_na_type_logits"] = torch.zeros(
+        num_predicted_residues, 2, device=device
+    )
+
     # recycle node state
     result["recycle_node_state"] = None
 
@@ -169,6 +174,9 @@ def init_empty_collate_results(
     result["pred_edge_existence_dict"] = dict()
     for i in range(num_predicted_residues):
         result["pred_edge_existence_dict"][i] = dict()
+
+    # NA pairing stats keyed by undirected residue pair (min_idx, max_idx)
+    result["pred_pairing_stats"] = dict()
 
     return result
 
@@ -302,6 +310,10 @@ def collate_nn_results(
     if "pred_aatype" in results:
         collated_results["pred_aatype"][indices[update_slice]] += results["pred_aatype"][update_slice]
 
+    # update DNA/RNA logits
+    if "pred_na_type_logits" in results and results["pred_na_type_logits"] is not None:
+        collated_results["pred_na_type_logits"][indices[update_slice]] += results["pred_na_type_logits"][update_slice]
+
     # update recycle node state
     if "recycle_node_state" in results and results["recycle_node_state"] is not None:
         if collated_results["recycle_node_state"] is None:
@@ -356,6 +368,35 @@ def collate_nn_results(
         #    print(key, value)
         #exit()
 
+    # update NA pairing stats using undirected pair averaging
+    if "pred_pairing" in results and results["pred_pairing"] is not None:
+        pred_pairing = torch.sigmoid(results["pred_pairing"]).reshape(-1).cpu().numpy()
+        edge_index = results["edge_index"].long().cpu().numpy()
+        prot_mask_local = results["prot_mask"].bool().cpu().numpy()
+
+        n, k = edge_index.shape
+        indices_np = indices.cpu().numpy()
+
+        src_local = np.repeat(np.arange(n), k)
+        dst_local = edge_index.reshape(-1)
+
+        src_global = indices_np[src_local]
+        dst_global = indices_np[dst_local]
+
+        na_na_mask = (~prot_mask_local[src_local]) & (~prot_mask_local[dst_local])
+        prob_mask = pred_pairing > 0.10
+        mask = na_na_mask & prob_mask
+
+        for s, d, p in zip(src_global[mask], dst_global[mask], pred_pairing[mask]):
+            s = int(s)
+            d = int(d)
+            if s == d:
+                continue
+            key = (s, d) if s < d else (d, s)
+            if key not in collated_results["pred_pairing_stats"]:
+                collated_results["pred_pairing_stats"][key] = [0.0, 0]
+            collated_results["pred_pairing_stats"][key][0] += float(p)
+            collated_results["pred_pairing_stats"][key][1] += 1
 
     # update polymer += -> =
     polymer = update_polymer_gt_frames(
@@ -476,6 +517,12 @@ def get_final_nn_results(collated_results):
             collated_results["pred_aatype"] / collated_results["counts"][..., None]
         )
 
+    # DNA/RNA logits
+    if "pred_na_type_logits" in collated_results:
+        final_results["pred_na_type_logits"] = (
+            collated_results["pred_na_type_logits"] / collated_results["counts"][..., None]
+        )
+
     if collated_results.get("recycle_node_state", None) is not None:
         final_results["recycle_node_state"] = (
             collated_results["recycle_node_state"]
@@ -492,6 +539,25 @@ def get_final_nn_results(collated_results):
 
     if "pred_edge_existence_dict" in collated_results:
         final_results["pred_edge_existence_dict"] = collated_results["pred_edge_existence_dict"]
+
+    if "pred_pairing_stats" in collated_results:
+        pred_pairing_dict = dict()
+        for (i, j), (prob_sum, prob_count) in collated_results["pred_pairing_stats"].items():
+            if prob_count <= 0:
+                continue
+            mean_prob = float(prob_sum) / float(prob_count)
+            if i not in pred_pairing_dict:
+                pred_pairing_dict[i] = dict()
+            if j not in pred_pairing_dict:
+                pred_pairing_dict[j] = dict()
+            pred_pairing_dict[i][j] = mean_prob
+            pred_pairing_dict[j][i] = mean_prob
+        final_results["pred_pairing_dict"] = pred_pairing_dict
+
+        # print for debug
+        #for key, value in final_results["pred_pairing_dict"].items():
+        #    print(key, value)
+        #exit()
 
     return dict([(k, v.numpy()) if torch.is_tensor(v) else (k, v) for (k, v) in final_results.items()])
 

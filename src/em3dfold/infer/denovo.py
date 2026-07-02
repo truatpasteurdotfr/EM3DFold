@@ -1988,7 +1988,7 @@ def final_results_align_to_sequence_beam_protein(
 
     reordered_final_results = {}
     for key, value in working_results.items():
-        if key == "pred_edge_existence_dict":
+        if key in {"pred_edge_existence_dict", "pred_pairing_dict"}:
             continue
         reordered_final_results[key] = value[existence_mask]
     reordered_final_results["_dummy_atom_pos"] = pred_atom_pos
@@ -2442,9 +2442,9 @@ def final_results_align_to_sequence(
     reordered_final_results = {}
     for key, value in final_results.items():
 
-        # Must not reorder pred_edge_existence_dict
-        # Afterwards, we have idx_exist_to_original to indicate the correspondence between the original and the existed
-        if key == "pred_edge_existence_dict":
+        # Must not reorder sparse dict outputs here.
+        # Afterwards, we have idx_exist_to_original to indicate the correspondence between the original and the existed.
+        if key in {"pred_edge_existence_dict", "pred_pairing_dict"}:
             continue
         reordered_final_results[key] = value[existence_mask]
         
