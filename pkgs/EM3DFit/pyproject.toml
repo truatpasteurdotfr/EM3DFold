@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "em3dfit"
+version = "0.1.0"
+description = "EM3D fitting utilities."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "Proprietary - All Rights Reserved"}
+dependencies = [
+  "ortools",
+  "scipy",
+  "torch",
+]
+
+[project.scripts]
+em3dfit = "em3dfit.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["em3dfit", "em3dfit.*"]
+
+[tool.pytest.ini_options]
+cache_dir = ".test-cache/pytest"

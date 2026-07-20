@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "em3dfold"
+dynamic = ["version"]
+description = "EM3DFold package"
+readme = "README.md"
+requires-python = ">=3.10"
+
+[project.scripts]
+em3dfold = "em3dfold.__main__:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.dynamic]
+version = {attr = "em3dfold.__version__"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["em3dfold", "em3dfold.*"]
+
+[tool.setuptools.package-data]
+em3dfold = [
+  "bin/*",
+  "bin/src/*",
+  "bin/src/**/*",
+  "infer/config/*.yaml",
+  "io/*.txt",
+  "models/**/*.txt",
+  "polymer_utils/*.txt",
+  "template/**/*.txt",
+  "template/**/*.dat",
+]

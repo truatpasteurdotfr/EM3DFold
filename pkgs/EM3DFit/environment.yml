@@ -1,0 +1,9 @@
+name: em3dfit
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  - python
+  - scipy
+  - pytorch
