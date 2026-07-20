@@ -97,7 +97,7 @@ em3dfold build --map/-m MAP.mrc \
     --device 0
 ```
 
-To explicitly set the weights directory:
+EM3DFold reads env variable `EM_WEIGHTS_DIR` by default to find the pretrained model weights, which should be set during the installation steps above. You can also explicitly set the weights directory every time you running EM3DFold by:
 ```bash
 EM_WEIGHTS_DIR=/path/to/weights em3dfold build --map ...
 ```
@@ -111,7 +111,7 @@ EM_WEIGHTS_DIR=/path/to/weights em3dfold build --map ...
   - Multiple GPUs are supported with a comma-separated list such as `--device 0,1,2,3`.
   - Multi-GPU acceleration is currently only used in the `CA/C4' prediction` and `denovo modeling` stages. 
   - More GPUs usually make the run faster, but the speedup is not linear.
-- By default, intermediate results (predicted maps recycled structures) will be removed. Use `--keep-temp-files` if you want to keep them. 
+- By default, intermediate results (predicted atom probability maps and recycled structures) will be removed. Use `--keep-temp-files` if you want to keep them. 
 
 Typical output directory layout:
 ```text
