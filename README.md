@@ -160,11 +160,11 @@ em3dfold build --map emd_64369.map --protein 9UO1.fa -o 9UO1
     <tr>
         <td align="center">
             <p>The input map looks like</p>
-            <img src="assets/9UO1_map.jpg" width="350" />
+            <img src="assets/9UO1_map.jpg" width="400" />
         </td>
         <td align="center">
             <p>The output model (blue) and the PDB model (green) looks like</p>
-            <img src="assets/9UO1_model.jpg" width="350" />
+            <img src="assets/9UO1_model.jpg" width="400" />
         </td>
     </tr>
 </table>
@@ -192,11 +192,11 @@ em3dfold build --map emd_41354.map --rna 8T5O.fa -o 8T5O
     <tr>
         <td align="center">
             <p>The input map looks like</p>
-            <img src="assets/8T5O_map.jpg" width="350" />
+            <img src="assets/8T5O_map.jpg" width="400" />
         </td>
         <td align="center">
             <p>The output model (blue) and the PDB model (green) looks like</p>
-            <img src="assets/8T5O_model.jpg" width="350" />
+            <img src="assets/8T5O_model.jpg" width="400" />
         </td>
     </tr>
 </table>
@@ -228,11 +228,11 @@ em3dfold build --map emd_39084.map --protein 8Y9N_prot.fa --rna 8Y9N_rna.fa --dn
     <tr>
         <td align="center">
             <p>The input map looks like</p>
-            <img src="assets/8Y9N_map.jpg" width="350" />
+            <img src="assets/8Y9N_map.jpg" width="400" />
         </td>
         <td align="center">
             <p>The output model (blue) and the PDB model (green) looks like</p>
-            <img src="assets/8Y9N_model.jpg" width="350" />
+            <img src="assets/8Y9N_model.jpg" width="400" />
         </td>
     </tr>
 </table>
