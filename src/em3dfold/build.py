@@ -62,6 +62,14 @@ def _format_wall_time(timestamp=None):
 
 
 def add_args(parser):
+    parser.usage = (
+        "%(prog)s [--verbose] --map MAP [--protein PROTEIN] [--rna RNA] [--dna DNA] "
+        "--output OUTPUT [--device DEVICE] [--lm-weights-dir LM_WEIGHTS_DIR] "
+        "[--pred-weights-dir PRED_WEIGHTS_DIR] "
+        "[--protein-all-atom-weights PROTEIN_ALL_ATOM_WEIGHTS] "
+        "[--na-all-atom-weights NA_ALL_ATOM_WEIGHTS] [--na-aa-weights NA_AA_WEIGHTS] "
+        "[--recycle RECYCLE] [--keep-temp-files]"
+    )
     parser.add_argument("--map", "-m", help="Input map", required=True)
     # Using --protein/--dna/--rna instead of a consensus --seq
     parser.add_argument("--protein", "-p", help="Input protein sequence")
@@ -73,7 +81,7 @@ def add_args(parser):
         "-pt",
         nargs="+",
         default=None,
-        help="Input protein template file(s); each protein chain will be split into temp_dir/templates/template_x_chain_x.cif",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument("--output", "-o", help="Output directory", required=True)
     parser.add_argument(
@@ -104,23 +112,30 @@ def add_args(parser):
         "--na-aa-weights",
         help="Optional override for voxel-based nucleic-acid typing weights; defaults to <weights>/na/model_na_aa_new",
     )
+    parser.set_defaults(infer_na_aa=True)
     parser.add_argument(
         "--infer-na-aa",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Run voxel-based nucleic-acid typing and pass logits into denovo NA sequence assignment; disable with --no-infer-na-aa",
+        dest="infer_na_aa",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--no-infer-na-aa",
+        dest="infer_na_aa",
+        action="store_false",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--protein-model-config",
-        help="Optional protein denovo model config yaml; defaults to model_v3x2_12l_256_128_h8.yaml",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--na-model-config",
-        help="Optional nucleic-acid denovo model config yaml; defaults to model_v3x2_12l_256_128_h8.yaml",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--cpx-model-config",
-        help="Optional fallback complex denovo model config yaml; defaults to model_v3x.yaml",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--recycle",
@@ -132,65 +147,72 @@ def add_args(parser):
         "--protein-recycle",
         type=int,
         default=None,
-        help="Protein denovo recycle count. Defaults to --recycle when set, otherwise 4.",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--na-recycle",
         type=int,
         default=None,
-        help="Nucleic-acid denovo recycle count. Defaults to --recycle when set, otherwise 3.",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--repeat-per-residue",
         type=int,
         default=2,
-        help="Shared repeat-per-residue used by denovo inference and cpx fallback when branch-specific values are not provided.",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--protein-repeat-per-residue",
         type=int,
         default=None,
-        help="Protein denovo repeat-per-residue. Defaults to --repeat-per-residue when not set.",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--na-repeat-per-residue",
         type=int,
         default=None,
-        help="Nucleic-acid denovo repeat-per-residue. Defaults to --repeat-per-residue when not set.",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--temp-root",
-        help="Optional parent directory for the build temporary workspace",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--use-system-temp",
         action="store_true",
-        help="Create the build temporary workspace with tempfile.mkdtemp instead of <output>/temp",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--ca-component-link-distance",
         type=float,
         default=6.0,
-        help="Optional CA point-graph edge distance for connected-component filtering after getp; disabled when <= 0",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--ca-component-min-size",
         type=int,
         default=0,
-        help="Optional minimum CA connected-component size after getp; disabled when <= 0",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--ca-component-min-fraction-largest",
         type=float,
         default=0.05,
-        help="Optional minimum fraction of the largest CA connected component kept after getp; disabled when <= 0",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument("--keep-temp-files", "-k", action="store_true", help="Whether to keep temp files")
+    parser.set_defaults(keep_hmm_files=True)
     parser.add_argument(
         "--keep-hmm-files",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Keep HMM alignment/profile debug artifacts; disable with --no-keep-hmm-files",
+        dest="keep_hmm_files",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--no-keep-hmm-files",
+        dest="keep_hmm_files",
+        action="store_false",
+        help=argparse.SUPPRESS,
     )
     # Skipping controls
     skip_group = parser.add_argument_group("Skipping options")
