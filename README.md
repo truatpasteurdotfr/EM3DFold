@@ -93,7 +93,6 @@ em3dfold build --map/-m MAP.mrc \
     --protein/-p PROTEIN.fa \
     --rna/-r RNA.fa \
     --dna/-d DNA.fa \
-    --protein-template/-pt PROTEIN_TEMPLATE_0.cif [...] \
     --output OUT \
     --device 0
 ```
@@ -107,16 +106,12 @@ EM_WEIGHTS_DIR=/path/to/weights em3dfold build --map ...
 - Input FASTA files can each include multiple sequences.
 - You can provide only `--protein`, only `--rna`, only `--dna`, or any valid combination of them.
 - If you launch >1 modeling job, the output directory **MUST** be different for each run.
-- Input protein template(s) may be provided as either single-chain or multi-chain PDB/mmCIF files.
-  - The number of input template chains **SHOULD** match the number of target protein chains. If the target contains repeated identical chains, provide the corresponding template multiple times. 
-  - For example, to pass 2 identical chains `0.pdb` and 2 non-identical chains `1.pdb` and `2.pdb`, use `--protein-template 0.pdb 0.pdb 1.pdb 2.pdb`.
 - GPU device control:
   - `--device 0` means use `cuda:0`.
   - Multiple GPUs are supported with a comma-separated list such as `--device 0,1,2,3`.
   - Multi-GPU acceleration is currently only used in the `CA/C4' prediction` and `denovo modeling` stages. 
   - More GPUs usually make the run faster, but the speedup is not linear.
 - By default, intermediate results (predicted maps recycled structures) will be removed. Use `--keep-temp-files` if you want to keep them. 
-- Currently, only supports protein templates, nucleic-acids support depends on the community needs.
 
 Typical output directory layout:
 ```text
@@ -125,7 +120,6 @@ OUTPUT_DIR/
 ├── output.cif
 ├── output_denovo.cif
 ├── output_denovo_entropy_scores.cif
-├── output_fit.cif
 └── temp/  # only kept with --keep-temp-files
     ├── format_map.mrc # formated input map
     ├── pred/ # predicted atom maps
@@ -134,10 +128,9 @@ OUTPUT_DIR/
 ```
 
 - `run.log`: detailed running logs.
-- `output.cif`: final model selected by the full workflow. When no template is provided, it's equal to `output_denovo.cif`.
+- `output.cif`: final model.
 - `output_denovo.cif`: de novo model.
 - `output_denovo_entropy_scores.cif`: de novo model with amino-acid entropy scores.
-- `output_fit.cif`: template fitting result if the fit stage is run successfully.
 
 **Check the command usage any time you forget how to run EM3DFold**
 ```bash
@@ -170,14 +163,6 @@ em3dfold build --map MAP.mrc \
   --device 0
 ```
 
-#### 4. Protein modeling with templates
-```bash
-em3dfold build --map MAP.mrc \ 
-  --protein protein.fa \ 
-  --protein-template protein_template_0.cif [...] \
-  --output out_protein \ 
-  --device 0
-```
 
 ## Trouble shooting
 - **No module named "xxx"**: package `xxx` is missing in your current environment. Install it with `pip install xxx` or `conda install xxx`.
