@@ -151,7 +151,7 @@ Below shows how we download a target protein sequence and map from the PDB/EMDB 
 # download sequence
 wget https://www.rcsb.org/fasta/entry/9UO1 -O 9UO1.fa
 # download map
-wget https://files.wwpdb.org/pub/emdb/structures/EMD-64369/map/emd_64369.map.gz
+wget https://files.wwpdb.org/pub/emdb/structures/EMD-64369/map/emd_64369.map.gz -O emd_64369.map.gz
 gunzip emd_64369.map.gz
 # run EM3DFold
 em3dfold build --map emd_64369.map --protein 9UO1.fa -o 9UO1
@@ -183,7 +183,7 @@ Below shows how we download a target RNA sequence and map from the PDB/EMDB and 
 # download sequence
 wget https://www.rcsb.org/fasta/entry/8T5O -O 8T5O.fa
 # download map
-wget https://files.wwpdb.org/pub/emdb/structures/EMD-41354/map/emd_41354.map.gz
+wget https://files.wwpdb.org/pub/emdb/structures/EMD-41354/map/emd_41354.map.gz -O emd_41354.map.gz
 gunzip emd_41354.map.gz
 # run EM3DFold
 em3dfold build --map emd_41354.map --rna 8T5O.fa -o 8T5O
@@ -219,7 +219,7 @@ wget https://www.rcsb.org/fasta/entry/8Y9N -O 8Y9N.fa
 # split sequences into protein, rna and dna parts
 : > 8Y9N_prot.fa && : > 8Y9N_rna.fa && : > 8Y9N_dna.fa && awk 'BEGIN{prot="8Y9N_prot.fa";rna="8Y9N_rna.fa";dna="8Y9N_dna.fa"} /^>/{out=($0~/\|crRNA\|/)?rna:(($0~/\|DNA/)? dna:prot)} {if(out!="") print >> out}' 8Y9N.fa
 # download map
-wget https://files.wwpdb.org/pub/emdb/structures/EMD-39084/map/emd_39084.map.gz
+wget https://files.wwpdb.org/pub/emdb/structures/EMD-39084/map/emd_39084.map.gz -O emd_39084.map.gz
 gunzip emd_39084.map.gz
 # run EM3DFold
 em3dfold build --map emd_39084.map --protein 8Y9N_prot.fa --rna 8Y9N_rna.fa --dna 8Y9N_dna.fa -o 8Y9N
