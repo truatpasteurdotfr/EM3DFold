@@ -93,10 +93,70 @@ def add_args(parser):
         help="Optional shared root directory for weights",
     )
     parser.add_argument(
+        "--protein-all-atom-weights",
+        help="Optional override for protein all-atom denovo weights; defaults to <weights>/protein/model_all_atom",
+    )
+    parser.add_argument(
+        "--na-all-atom-weights",
+        help="Optional override for nucleic-acid all-atom denovo weights; defaults to <weights>/na/model_all_atom",
+    )
+    parser.add_argument(
+        "--na-aa-weights",
+        help="Optional override for voxel-based nucleic-acid typing weights; defaults to <weights>/na/model_na_aa_new",
+    )
+    parser.add_argument(
+        "--infer-na-aa",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Run voxel-based nucleic-acid typing and pass logits into denovo NA sequence assignment; disable with --no-infer-na-aa",
+    )
+    parser.add_argument(
+        "--protein-model-config",
+        help="Optional protein denovo model config yaml; defaults to model_v3x2_12l_256_128_h8.yaml",
+    )
+    parser.add_argument(
+        "--na-model-config",
+        help="Optional nucleic-acid denovo model config yaml; defaults to model_v3x2_12l_256_128_h8.yaml",
+    )
+    parser.add_argument(
+        "--cpx-model-config",
+        help="Optional fallback complex denovo model config yaml; defaults to model_v3x.yaml",
+    )
+    parser.add_argument(
+        "--recycle",
+        type=int,
+        default=None,
+        help="Shared denovo recycle count. Also used by legacy/cpx fallback when set.",
+    )
+    parser.add_argument(
+        "--protein-recycle",
+        type=int,
+        default=None,
+        help="Protein denovo recycle count. Defaults to --recycle when set, otherwise 4.",
+    )
+    parser.add_argument(
+        "--na-recycle",
+        type=int,
+        default=None,
+        help="Nucleic-acid denovo recycle count. Defaults to --recycle when set, otherwise 3.",
+    )
+    parser.add_argument(
         "--repeat-per-residue",
         type=int,
         default=2,
-        help="How many times to repeat per residue during denovo inference.",
+        help="Shared repeat-per-residue used by denovo inference and cpx fallback when branch-specific values are not provided.",
+    )
+    parser.add_argument(
+        "--protein-repeat-per-residue",
+        type=int,
+        default=None,
+        help="Protein denovo repeat-per-residue. Defaults to --repeat-per-residue when not set.",
+    )
+    parser.add_argument(
+        "--na-repeat-per-residue",
+        type=int,
+        default=None,
+        help="Nucleic-acid denovo repeat-per-residue. Defaults to --repeat-per-residue when not set.",
     )
     parser.add_argument(
         "--temp-root",
@@ -287,7 +347,10 @@ def _resolve_pred_weights_dir(pred_weights_dir, script_dir):
             return str(env_root)
         return str((env_root / "weights").resolve())
 
-    return pjoin(script_dir, "weights")
+    raise ValueError(
+        "Prediction weights directory is not specified. "
+        "Use --pred-weights-dir/--weights-dir or set EM_WEIGHTS_DIR."
+    )
 
 
 def _resolve_lm_weights_dir(lm_weights_dir):
@@ -309,6 +372,157 @@ def _resolve_lm_weights_dir(lm_weights_dir):
     if env_root.name == "weights":
         return (env_root.parent / "lm_weights").resolve()
     return (env_root / "lm_weights").resolve()
+
+
+def _resolve_optional_file_path(path):
+    if path is None:
+        return None
+    return abspath(path)
+
+
+def _run_infer_job(
+    *,
+    map_path,
+    polymer_path,
+    model_dir,
+    model_config,
+    device,
+    output_dir,
+    recycle,
+    repeat_per_residue=2,
+    protein_seq=None,
+    dna_seq=None,
+    rna_seq=None,
+    prot_seq_embed=None,
+    na_seq_embed=None,
+    na_aa_logits=None,
+    fallback_to_predicted_na_types=True,
+):
+    from em3dfold.infer import infer
+
+    inferlm_args = argparse.Namespace()
+    inferlm_args.map = map_path
+    inferlm_args.polymer = polymer_path
+    inferlm_args.model_dir = model_dir
+    inferlm_args.device = device
+    inferlm_args.crop_length = 200
+    inferlm_args.repeat_per_residue = int(repeat_per_residue)
+    inferlm_args.run_iters = 3
+    inferlm_args.batch_size = 1
+    inferlm_args.fp16 = False
+    inferlm_args.voxel_size = 1.0
+    inferlm_args.refine = False
+    inferlm_args.no_use_random_affine = False
+    inferlm_args.recycle = recycle
+    inferlm_args.prot_seq_embed = prot_seq_embed
+    inferlm_args.na_seq_embed = na_seq_embed
+    inferlm_args.na_aa_logits = na_aa_logits
+    inferlm_args.output_dir = output_dir
+    inferlm_args.protein_seq = protein_seq
+    inferlm_args.dna_seq = dna_seq
+    inferlm_args.rna_seq = rna_seq
+    inferlm_args.min_na_chain_len = 3
+    inferlm_args.fallback_to_predicted_na_types = fallback_to_predicted_na_types
+    inferlm_args.pass_prev_aa_probs = True
+    inferlm_args.pass_prev_rmsd = True
+    inferlm_args.pass_prev_node = True
+    inferlm_args.model_config = model_config
+    print(f"# inferlm model weights: {model_dir}")
+    print(f"# inferlm model config: {model_config}")
+    print(f"# inferlm polymer input: {polymer_path}")
+    infer.main(inferlm_args)
+
+
+def _run_pred_na_type_job(
+    *,
+    map_path,
+    ckpt_path,
+    device,
+    output_dir,
+    batchsize=40,
+    stride=16,
+    box_size=48,
+):
+    from em3dfold.pipeline import pred_na_type
+
+    pred_args = argparse.Namespace()
+    pred_args.input = map_path
+    pred_args.output = output_dir
+    pred_args.ckpt = ckpt_path
+    pred_args.device = device
+    pred_args.batchsize = int(batchsize)
+    pred_args.stride = int(stride)
+    pred_args.box_size = int(box_size)
+    pred_args.apix = 1.0
+    pred_args.normalize_percentile = 99.999
+    pred_args.gaussian_sigma = None
+    pred_args.gaussian_weight = True
+    pred_args.fp16 = False
+    pred_args.write_mrc = False
+    pred_na_type.main(pred_args)
+    return pjoin(output_dir, "logits.npz")
+
+
+def _merge_split_denovo_outputs(output_dir, *, protein_output_dir=None, na_output_dir=None):
+    from em3dfold.infer.inferlm_common import _write_merged_best_so_far_output
+
+    protein_output_path = _first_existing_path(
+        pjoin(protein_output_dir, "output.cif") if protein_output_dir is not None else None,
+    )
+    na_output_path = _first_existing_path(
+        pjoin(na_output_dir, "output.cif") if na_output_dir is not None else None,
+    )
+    merged_output_path = _write_merged_best_so_far_output(
+        pjoin(output_dir, "output.cif"),
+        protein_path=protein_output_path,
+        na_path=na_output_path,
+    )
+
+    protein_entropy_path = _first_existing_path(
+        pjoin(protein_output_dir, "output_entropy_score.cif") if protein_output_dir is not None else None,
+    )
+    na_entropy_path = _first_existing_path(
+        pjoin(na_output_dir, "output_entropy_score.cif") if na_output_dir is not None else None,
+    )
+    merged_entropy_output_path = _write_merged_best_so_far_output(
+        pjoin(output_dir, "output_entropy_score.cif"),
+        protein_path=protein_entropy_path,
+        na_path=na_entropy_path,
+    )
+
+    return merged_output_path, merged_entropy_output_path
+
+
+def _resolve_denovo_recycles(args, run_protein, run_na):
+    del run_na
+    shared_recycle = getattr(args, "recycle", None)
+    protein_recycle = getattr(args, "protein_recycle", None)
+    na_recycle = getattr(args, "na_recycle", None)
+
+    resolved_protein_recycle = (
+        protein_recycle if protein_recycle is not None else (shared_recycle if shared_recycle is not None else 4)
+    )
+    resolved_na_recycle = (
+        na_recycle if na_recycle is not None else (shared_recycle if shared_recycle is not None else 3)
+    )
+    resolved_cpx_recycle = (
+        shared_recycle if shared_recycle is not None else (4 if run_protein else 3)
+    )
+    return resolved_cpx_recycle, resolved_protein_recycle, resolved_na_recycle
+
+
+def _resolve_denovo_repeat_per_residues(args):
+    shared_repeat = getattr(args, "repeat_per_residue", None)
+    if shared_repeat is None:
+        shared_repeat = 2
+    protein_repeat = getattr(args, "protein_repeat_per_residue", None)
+    if protein_repeat is None:
+        protein_repeat = shared_repeat
+    na_repeat = getattr(args, "na_repeat_per_residue", None)
+    if na_repeat is None:
+        na_repeat = shared_repeat
+    resolved_cpx_repeat = shared_repeat
+    return int(resolved_cpx_repeat), int(protein_repeat), int(na_repeat)
 
 
 def _prepare_temp_dir(out_dir, temp_root=None, use_system_temp=False):
@@ -669,10 +883,35 @@ def main(args):
     build_started_at = time.time()
     os.environ["EM3DFOLD_KEEP_HMM_FILES"] = "1" if bool(getattr(args, "keep_hmm_files", True)) else "0"
     script_dir = os.path.dirname(__file__)
-    inferlm_v3x_model_config = pjoin(script_dir, "infer", "config", "model_v3x.yaml")
+    inferlm_cpx_model_config = _resolve_optional_file_path(args.cpx_model_config) or pjoin(
+        script_dir, "infer", "config", "model_v3x.yaml"
+    )
+    inferlm_split_model_config = pjoin(
+        script_dir, "infer", "config", "model_v3x2_12l_256_128_h8.yaml"
+    )
+    inferlm_protein_model_config = (
+        _resolve_optional_file_path(args.protein_model_config) or inferlm_split_model_config
+    )
+    inferlm_na_model_config = (
+        _resolve_optional_file_path(args.na_model_config) or inferlm_split_model_config
+    )
     weights_root_dir = _resolve_pred_weights_dir(args.pred_weights_dir, script_dir)
     pred_weights_dir = weights_root_dir
-    all_atom_weights_dir = pjoin(weights_root_dir, "cpx", "model_all_atom")
+    dual_pred_weights_path = pjoin(weights_root_dir, "cpx", "model_dual")
+    cpx_all_atom_weights_dir = pjoin(weights_root_dir, "cpx", "model_all_atom")
+    protein_all_atom_weights_dir = (
+        _resolve_optional_file_path(args.protein_all_atom_weights)
+        or pjoin(weights_root_dir, "protein", "model_all_atom")
+    )
+    na_all_atom_weights_dir = (
+        _resolve_optional_file_path(args.na_all_atom_weights)
+        or pjoin(weights_root_dir, "na", "model_all_atom")
+    )
+    na_aa_weights_path = (
+        _resolve_optional_file_path(args.na_aa_weights)
+        or pjoin(weights_root_dir, "na", "model_na_aa_new")
+    )
+    enable_infer_na_aa = bool(getattr(args, "infer_na_aa", True)) and (not args.skip_infer_na_aa)
 
     out_dir = abspath(args.output)
     temp_dir = _prepare_temp_dir(
@@ -683,7 +922,15 @@ def main(args):
     os.makedirs(out_dir, exist_ok=True)
 
     print(f"# Pred weights dir: {pred_weights_dir}")
-    print(f"# inferlm weights dir: {all_atom_weights_dir}")
+    print(f"# dual stage1 weights path: {dual_pred_weights_path}")
+    print(f"# inferlm cpx weights dir: {cpx_all_atom_weights_dir}")
+    print(f"# inferlm protein weights dir: {protein_all_atom_weights_dir}")
+    print(f"# inferlm NA weights dir: {na_all_atom_weights_dir}")
+    print(f"# voxel NA typing weights path: {na_aa_weights_path}")
+    print(f"# voxel NA typing enabled: {enable_infer_na_aa}")
+    print(f"# inferlm fallback cpx config: {inferlm_cpx_model_config}")
+    print(f"# inferlm protein config: {inferlm_protein_model_config}")
+    print(f"# inferlm NA config: {inferlm_na_model_config}")
     print(f"# Temp root dir: {temp_dir}")
 
     template_chain_paths = []
@@ -760,6 +1007,7 @@ def main(args):
     )
     run_protein_input = protein_seq_path is not None
     run_nucleic_input = (rna_seq_path is not None) or (dna_seq_path is not None)
+    na_aa_logits_path = None
 
     # run segmentation
     _announce_build_stage("pred", active_stages)
@@ -771,24 +1019,59 @@ def main(args):
         start = time.time()
         from em3dfold.pipeline import pred
 
+        if not os.path.exists(dual_pred_weights_path):
+            raise FileNotFoundError(f"Dual stage1 weights are not found: {dual_pred_weights_path}")
+
         pred_args = argparse.Namespace()
         pred_args.input = runtime_map_path
         pred_args.output = pjoin(temp_dir, "pred")
+        pred_args.ckpt = dual_pred_weights_path
         pred_args.contour = 1e-6
         pred_args.batchsize = 40
         pred_args.device = multi_stage_device
-        pred_args.model = pred_weights_dir
-        pred_args.stride = 16 # 12
-        pred_args.protein = run_protein
-        pred_args.nucleic = run_nucleic
+        pred_args.stride = 24
+        pred_args.box_size = 48
+        pred_args.apix = 1.0
+        pred_args.gaussian_sigma = None
+        pred_args.gaussian_weight = True
+        pred_args.save_npz = False
+        pred_args.fp16 = False
 
         pred.main(pred_args)
         clear_cuda_cache(multi_stage_device, note="pred")
+
+        if run_nucleic_input and (not args.skip_infer_na):
+            if enable_infer_na_aa:
+                if not os.path.exists(na_aa_weights_path):
+                    raise FileNotFoundError(
+                        (
+                            "Voxel NA typing weights are not found: {}. "
+                            "Use --na-aa-weights to override or --no-infer-na-aa to disable."
+                        ).format(na_aa_weights_path)
+                    )
+                na_aa_output_dir = pjoin(temp_dir, "pred", "na_aa")
+                os.makedirs(na_aa_output_dir, exist_ok=True)
+                na_aa_logits_path = _run_pred_na_type_job(
+                    map_path=pjoin(temp_dir, "pred", "na.mrc"),
+                    ckpt_path=na_aa_weights_path,
+                    device=multi_stage_device,
+                    output_dir=na_aa_output_dir,
+                    stride=24,
+                )
+                clear_cuda_cache(multi_stage_device, note="pred_na_type")
+                print(f"# build: voxel NA typing logits = {na_aa_logits_path}")
+            else:
+                print("# build: voxel NA typing disabled; use model prediction fallback only")
+
         end = time.time()
 
         print("# Time = {:.4f}".format(end - start))
         _finish_build_stage(start)
     else:
+        expected_na_aa_logits_path = pjoin(temp_dir, "pred", "na_aa", "logits.npz")
+        if os.path.exists(expected_na_aa_logits_path):
+            na_aa_logits_path = expected_na_aa_logits_path
+            print(f"# Reuse voxel NA typing logits = {na_aa_logits_path}")
         _finish_build_stage(skipped=True)
 
 
@@ -857,7 +1140,7 @@ def main(args):
         run_na = run_nucleic_input and (not args.skip_infer_na)
 
         if args.skip_infer_na_aa:
-            print("# skip-infer-na-aa is ignore")
+            print("# skip-infer-na-aa is deprecated; treated as --no-infer-na-aa")
 
         if run_protein or run_na:
             denovo_dir = pjoin(temp_dir, "denovo")
@@ -908,37 +1191,103 @@ def main(args):
                 ],
             )
 
+            split_model_missing = []
+            if run_protein and not os.path.exists(protein_all_atom_weights_dir):
+                split_model_missing.append(("protein", protein_all_atom_weights_dir))
+            if run_na and not os.path.exists(na_all_atom_weights_dir):
+                split_model_missing.append(("na", na_all_atom_weights_dir))
+
+            cpx_recycle, protein_recycle, na_recycle = _resolve_denovo_recycles(
+                args,
+                run_protein=run_protein,
+                run_na=run_na,
+            )
+            cpx_repeat_per_residue, protein_repeat_per_residue, na_repeat_per_residue = _resolve_denovo_repeat_per_residues(args)
+            print(
+                "# Recycle settings: cpx={} protein={} na={}".format(
+                    cpx_recycle,
+                    protein_recycle,
+                    na_recycle,
+                )
+            )
+            print(
+                "# Repeat-per-residue settings: cpx={} protein={} na={}".format(
+                    cpx_repeat_per_residue,
+                    protein_repeat_per_residue,
+                    na_repeat_per_residue,
+                )
+            )
+
             start = time.time()
-            from em3dfold.infer import inferlm_v3x
-            inferlm_args = argparse.Namespace()
-            inferlm_args.map = runtime_map_path
-            inferlm_args.polymer = initial_polymer_path
-            inferlm_args.model_dir = all_atom_weights_dir
-            inferlm_args.device = multi_stage_device
-            inferlm_args.crop_length = 200 if run_protein else 200
-            inferlm_args.repeat_per_residue = int(args.repeat_per_residue)
-            inferlm_args.run_iters = 3
-            inferlm_args.batch_size = 1
-            inferlm_args.fp16 = False
-            inferlm_args.voxel_size = 1.0
-            inferlm_args.refine = False
-            inferlm_args.no_use_random_affine = False
-            inferlm_args.recycle = 4 if run_protein else 3
-            inferlm_args.prot_seq_embed = prot_seq_embed_path
-            inferlm_args.na_seq_embed = na_seq_embed_path
-            inferlm_args.na_aa_logits = pjoin(temp_dir, "pred", "logits.npz") if run_na else None
-            inferlm_args.output_dir = denovo_dir
-            inferlm_args.protein_seq = protein_seq_path
-            inferlm_args.dna_seq = dna_seq_path
-            inferlm_args.rna_seq = rna_seq_path
-            inferlm_args.min_na_chain_len = 3
-            inferlm_args.fallback_to_predicted_na_types = bool(run_na)
-            inferlm_args.pass_prev_aa_probs = True
-            inferlm_args.pass_prev_rmsd = True
-            inferlm_args.pass_prev_node = True
-            inferlm_args.model_config = inferlm_v3x_model_config
-            inferlm_v3x.main(inferlm_args)
-            clear_cuda_cache(multi_stage_device, note="inferlm_v3x")
+            if len(split_model_missing) == 0:
+                print("# Denovo mode: split protein/NA all-atom models")
+                protein_denovo_dir = pjoin(denovo_dir, "protein") if run_protein else None
+                na_denovo_dir = pjoin(denovo_dir, "na") if run_na else None
+
+                if run_protein:
+                    os.makedirs(protein_denovo_dir, exist_ok=True)
+                    _run_infer_job(
+                        map_path=runtime_map_path,
+                        polymer_path=pjoin(temp_dir, "pred", "raw_ca.pdb"),
+                        model_dir=protein_all_atom_weights_dir,
+                        model_config=inferlm_protein_model_config,
+                        device=multi_stage_device,
+                        output_dir=protein_denovo_dir,
+                        recycle=protein_recycle,
+                        repeat_per_residue=protein_repeat_per_residue,
+                        protein_seq=protein_seq_path,
+                        prot_seq_embed=prot_seq_embed_path,
+                        fallback_to_predicted_na_types=False,
+                    )
+                    clear_cuda_cache(multi_stage_device, note="infer_protein")
+
+                if run_na:
+                    os.makedirs(na_denovo_dir, exist_ok=True)
+                    _run_infer_job(
+                        map_path=runtime_map_path,
+                        polymer_path=pjoin(temp_dir, "pred", "raw_c4.pdb"),
+                        model_dir=na_all_atom_weights_dir,
+                        model_config=inferlm_na_model_config,
+                        device=multi_stage_device,
+                        output_dir=na_denovo_dir,
+                        recycle=na_recycle,
+                        repeat_per_residue=na_repeat_per_residue,
+                        dna_seq=dna_seq_path,
+                        rna_seq=rna_seq_path,
+                        na_seq_embed=na_seq_embed_path,
+                        na_aa_logits=na_aa_logits_path,
+                        fallback_to_predicted_na_types=True,
+                    )
+                    clear_cuda_cache(multi_stage_device, note="infer_na")
+
+                merged_output_path, merged_entropy_output_path = _merge_split_denovo_outputs(
+                    denovo_dir,
+                    protein_output_dir=protein_denovo_dir,
+                    na_output_dir=na_denovo_dir,
+                )
+                print(f"# Merged denovo output: {merged_output_path}")
+                print(f"# Merged denovo entropy output: {merged_entropy_output_path}")
+            else:
+                missing_str = ", ".join(f"{name}={path}" for name, path in split_model_missing)
+                print(f"# Denovo mode: fallback to legacy cpx model because split weights are missing: {missing_str}")
+                _run_infer_job(
+                    map_path=runtime_map_path,
+                    polymer_path=initial_polymer_path,
+                    model_dir=cpx_all_atom_weights_dir,
+                    model_config=inferlm_cpx_model_config,
+                    device=multi_stage_device,
+                    output_dir=denovo_dir,
+                    recycle=cpx_recycle,
+                    repeat_per_residue=cpx_repeat_per_residue,
+                    protein_seq=protein_seq_path,
+                    dna_seq=dna_seq_path,
+                    rna_seq=rna_seq_path,
+                    prot_seq_embed=prot_seq_embed_path,
+                    na_seq_embed=na_seq_embed_path,
+                    na_aa_logits=na_aa_logits_path,
+                    fallback_to_predicted_na_types=bool(run_na),
+                )
+                clear_cuda_cache(multi_stage_device, note="infer_cpx")
             end = time.time()
             print("# Time = {:.4f}".format(end - start))
         else:

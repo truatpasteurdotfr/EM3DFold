@@ -32,7 +32,7 @@ def main():
     # Check platform
     if platform.system() != "Linux":
         print("# WARN Your system is -> {}".format(platform.system()))
-        print("# WARN This program supports Linux systems (tested on CentOS 7)")
+        print("# WARN This program only supports Linux systems (tested on CentOS 7)")
         print("# WARN This program will still run, but at any time it will crash")
         time.sleep(1)
 
@@ -51,12 +51,11 @@ def main():
     warnings.filterwarnings("ignore")
 
     modules = {
-        "build": "em3dfold.build_dual",
-        "build-legacy": "em3dfold.build",
-        "assemble": "em3dfold.pipeline.assemble",
+        "build": "em3dfold.build",
         "eval": "em3dfold.pipeline.eval",
         "pred": "em3dfold.pipeline.pred",
         "qscore": "em3dfold.pipeline.get_qscore",
+        #"assemble": "em3dfold.pipeline.assemble",
     }
 
     subparsers = parser.add_subparsers(title="Choose a module",)
@@ -132,7 +131,7 @@ def main():
     if runtime_log_dir is not None:
         module_key = getattr(args, "_module_key", "main")
         stdout_progress_logger_name = f"em3dfold.{module_key}.progress"
-        if module_key in {"build", "build-legacy"}:
+        if module_key in {"build"}:
             stdout_progress_logger_name = (
                 "em3dfold.build.progress",
                 "em3dfold.pred.progress",

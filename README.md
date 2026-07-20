@@ -1,9 +1,7 @@
 # EM3DFold
 
 ## Overview
-EM3DFold is a software package for automatic protein, RNA, and DNA (and small molecules in the upcoming update) structure modeling from cryo-EM density maps.
-
-EM3DFold is also a major upgrade of our previously developed [EMProt method](https://www.nature.com/articles/s41594-025-01723-1) with faster running speed, better performance and stability.
+EM3DFold is a software package for automatic protein, RNA, and DNA structure modeling from cryo-EM density maps.
 
 <p align="center">
   <img src="assets/header.png" alt="EM3DFold header" width=720" />
@@ -55,7 +53,7 @@ bash scripts/install.sh
 
 #### 4. Download pretrained weights
 
-The provided `download.sh` scripts automatically downloads the pretrained weights of EM3DFold and needed language models into specified directory:
+The provided `download.sh` script automatically downloads the pretrained weights of EM3DFold and the required language models into the specified directory:
 
 ```bash
 # Download all weights and set env var `EM_WEIGHTS_DIR`
@@ -129,6 +127,9 @@ OUTPUT_DIR/
 ├── output_denovo_entropy_scores.cif
 ├── output_fit.cif
 └── temp/  # only kept with --keep-temp-files
+    ├── format_map.mrc # formated input map
+    ├── pred/ # predicted atom maps
+    ├── denovo/ # denovo modeling temp files
     ├── ...
 ```
 

@@ -1,6 +1,6 @@
 from em3dfold.utils.log_utils import install_exception_flush
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 install_exception_flush("em3dfold")
 
