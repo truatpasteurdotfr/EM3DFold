@@ -185,12 +185,12 @@ Below shows how we download a target RNA sequence and map from the PDB/EMDB and 
 # download sequence
 wget https://www.rcsb.org/fasta/entry/8T5O -O 8T5O.fa
 # download map
-wget https://files.wwpdb.org/pub/emdb/structures/EMD-41354/map/emd_41354.map.gz -O emd_41354.map.gz
-gunzip emd_41354.map.gz
+wget https://files.wwpdb.org/pub/emdb/structures/EMD-41059/map/emd_41059.map.gz -O emd_41059.map.gz
+gunzip emd_41059.map.gz
 ```
 ```bash
 # run EM3DFold
-em3dfold build --map emd_41354.map --rna 8T5O.fa -o 8T5O
+em3dfold build --map emd_41059.map --rna 8T5O.fa -o 8T5O
 ```
 <table align="center">
     <tr>
