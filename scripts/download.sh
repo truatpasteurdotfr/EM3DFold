@@ -8,7 +8,7 @@ MODEL_WEIGHTS_DIR="${DOWNLOAD_ROOT}/weights"
 LM_WEIGHTS_DIR="${DOWNLOAD_ROOT}/lm_weights"
 
 # Override EM3DFOLD_WEIGHTS_URL if your hosted EM3DFold weights tarball uses a different path.
-EM3DFOLD_WEIGHTS_URL="${EM3DFOLD_WEIGHTS_URL:-http://huanglab.phys.hust.edu.cn/EM3DFold/weights/weights_v1.1.tgz}"
+EM3DFOLD_WEIGHTS_URL="${EM3DFOLD_WEIGHTS_URL:-http://huanglab.phys.hust.edu.cn/EM3DFold/weights/weights_v1.2.tgz}"
 RINALMO_WEIGHTS_URL="${RINALMO_WEIGHTS_URL:-https://zenodo.org/records/15043668/files/rinalmo_giga_pretrained.pt}"
 ESM2_WEIGHTS_URL="${ESM2_WEIGHTS_URL:-https://dl.fbaipublicfiles.com/fair-esm/models/esm2_t33_650M_UR50D.pt}"
 ESM2_CONTACT_REGRESSION_URL="${ESM2_CONTACT_REGRESSION_URL:-https://dl.fbaipublicfiles.com/fair-esm/regression/esm2_t33_650M_UR50D-contact-regression.pt}"
