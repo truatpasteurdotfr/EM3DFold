@@ -24,7 +24,7 @@ from em3dfold.utils.torch_utils import clear_cuda_cache, get_device_names
 EM_WEIGHTS_ENV_VAR = "EM_WEIGHTS_DIR"
 BUILD_CONTACT_LINES = (
     f"Version: {getattr(em3dfold, '__version__', 'unknown')}",
-    "By Tao Li, Huang-lab, Huazhong University of Science and Technology",
+    "Tao Li, Huang-lab, Huazhong University of Science and Technology (HUST)",
 )
 
 
@@ -49,12 +49,12 @@ def _finish_build_stage(start_time=None, *, skipped=False):
 
 def _emit_stage_runtime_hint(stage_name):
     if stage_name in {"pred"}:
-        progress("This stage may take a few minutes if the target map is large.")
-        progress("The runtime scales approx. linearly with map size: 300^3 voxels takes ~= 2 minutes")
+        progress("This stage may take a few minutes (depend on map sizes)")
+        progress("The runtime scales linearly with map size: 300^3 voxels take ~ 1 minute(s)")
 
     if stage_name in {"denovo"}:
-        progress("This stage may take a few minutes if the target structure is large.")
-        progress("The runtime scales approx. linearly with res. counts: 3000 res. takes ~= 2 minutes each round")
+        progress("This stage may take a few minutes (depend on target sizes)")
+        progress("The runtime scales linearly with residue counts: 3000 residues take ~ 2 minute(s) each round")
 
 def _format_wall_time(timestamp=None):
     dt = datetime.now() if timestamp is None else datetime.fromtimestamp(timestamp)

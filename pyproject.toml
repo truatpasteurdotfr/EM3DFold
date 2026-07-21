@@ -33,4 +33,6 @@ em3dfold = [
   "polymer_utils/*.txt",
   "template/**/*.txt",
   "template/**/*.dat",
+  "rinalmo/*",
+  "rinalmo/**/*",
 ]

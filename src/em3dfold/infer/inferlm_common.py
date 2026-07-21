@@ -648,10 +648,6 @@ def run_main(args, model_class, model_args, run_inference_fn):
             args.protein_radius_threshold = 1.00
             args.na_radius_threshold = 2.00
 
-        progress_substage(
-            f"De novo recycle {i + 1}/{n_round_refine}",
-            logger_name=PROGRESS_LOGGER_NAME,
-        )
         print(f"# Infer {i + 1} / {n_round_refine}")
         args.output_dir = os.path.join(output_dir, f"recycle_{i}")
         output_info = run_inference_loop(args, model_class, model_args, run_inference_fn)
