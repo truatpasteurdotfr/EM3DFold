@@ -52,9 +52,11 @@ def main():
 
     modules = {
         "build": "em3dfold.build",
+        "build_no_seq": "em3dfold.build_no_seq",
         "eval": "em3dfold.pipeline.eval",
         "pred": "em3dfold.pipeline.pred",
         "qscore": "em3dfold.pipeline.get_qscore",
+        "hmm_search": "em3dfold.hmm_search",
         #"assemble": "em3dfold.pipeline.assemble",
     }
 
@@ -131,7 +133,7 @@ def main():
     if runtime_log_dir is not None:
         module_key = getattr(args, "_module_key", "main")
         stdout_progress_logger_name = f"em3dfold.{module_key}.progress"
-        if module_key in {"build"}:
+        if module_key in {"build", "build_no_seq"}:
             stdout_progress_logger_name = (
                 "em3dfold.build.progress",
                 "em3dfold.pred.progress",

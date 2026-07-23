@@ -1,11 +1,21 @@
 # EM3DFold
 
+<div align="center">
+<!--
+<img src="assets/logo.png" alt="EM3DFold: AI-driven Atomic Structure Modeling from Cryo-EM Maps" width="600" />
+-->
+<img src="assets/logo.png" alt="EM3DFold: AI-driven Atomic Structure Modeling from Cryo-EM Maps" />
+</div>
+
+
 ## Overview
 EM3DFold is a software package for automatic protein, RNA, and DNA structure modeling from cryo-EM density maps.
 
+<!--
 <p align="center">
   <img src="assets/header.png" alt="EM3DFold header" width=720" />
 </p>
+-->
 
 ## Requirements
 **Platform**: Linux.
@@ -58,6 +68,7 @@ The provided `download.sh` script automatically downloads the pretrained weights
 ```bash
 # Download all weights and set env var `EM_WEIGHTS_DIR`
 # Replace /path/to/save/pretrained/weights/ to the actual path
+conda activate em3dfold
 bash scripts/download.sh /path/to/save/pretrained/weights/
 
 # After downloading, the conda env needs to be refreshed
@@ -138,7 +149,10 @@ em3dfold build --help
 ```
 
 ## Examples
-#### 1. Protein denovo modeling
+<details>
+<summary>Protein denovo modeling</summary>
+<br>
+
 ```bash
 em3dfold build --map MAP.mrc \ 
   --protein protein.fa \ 
@@ -171,8 +185,14 @@ em3dfold build --map emd_64369.map --protein 9UO1.fa -o 9UO1
     </tr>
 </table>
 
+</details>
 
-#### 2. RNA denovo modeling
+
+
+<details>
+<summary>RNA denovo modeling</summary>
+<br>
+
 ```bash
 em3dfold build --map MAP.mrc \ 
   --rna rna.fa \ 
@@ -205,8 +225,15 @@ em3dfold build --map emd_41059.map --rna 8T5O.fa -o 8T5O
     </tr>
 </table>
 
+</details>
 
-#### 3. Protein-nucleic acid complex denovo modeling
+
+
+
+<details>
+<summary>Protein-nucleic acid complex denovo modeling</summary>
+<br>
+
 ```bash
 em3dfold build --map MAP.mrc \ 
   --protein protein.fa \ 
@@ -216,7 +243,7 @@ em3dfold build --map MAP.mrc \
   --device 0
 ```
 
-Below shows how we download target protein, RNA, DNA sequences and map from the PDB/EMDB and run EM3DFold modeling on it:
+Below shows how we download the target protein, RNA, DNA sequences and map from the PDB/EMDB and run EM3DFold modeling on it:
 ```bash
 # download sequence
 wget https://www.rcsb.org/fasta/entry/8Y9N -O 8Y9N.fa
@@ -242,6 +269,106 @@ em3dfold build --map emd_39084.map --protein 8Y9N_prot.fa --rna 8Y9N_rna.fa --dn
         </td>
     </tr>
 </table>
+
+</details>
+
+
+
+
+<details>
+<summary>Modeling without sequences</summary>
+<br>
+
+```bash
+em3dfold build --map MAP.mrc \
+  -o out_no_seq \
+  --device 0
+```
+By default, EM3DFold builds all protein and nucleic acid structures. We provide another sub-program `build_no_seq` with more options if you want to build only the protein/nucleic acid parts.
+```bash
+# build_no_seq provides more options
+em3dfold build_no_seq --map MAP.mrc \
+  -o out_no_seq \
+  --protein \ # build the protein parts
+  --rna \ # build the nucleic acid parts
+  --dna \ # build the nucleic acid parts
+  --device 0
+```
+
+Below shows how we download the target map from the EMDB and run EM3DFold sequence-free modeling on it:
+```bash
+# download map (PDB-9Z2N, EMD-73772)
+wget https://files.wwpdb.org/pub/emdb/structures/EMD-73772/map/emd_73772.map.gz -O emd_73772.map.gz
+gunzip emd_73772.map.gz
+```
+```bash
+# run EM3DFold with build or build_no_seq
+em3dfold build --map emd_73772.map -o 73772
+```
+<table align="center">
+    <tr>
+        <td align="center">
+            <p>The input map</p>
+            <img src="assets/73772_map.jpg" width="400" />
+        </td>
+        <td align="center">
+            <p>The output model (blue) and the PDB model (green)</p>
+            <img src="assets/73772_model.jpg" width="400" />
+        </td>
+    </tr>
+</table>
+
+</details>
+
+
+
+
+<details>
+<summary>Identify unknown protein/nucleic acids from cryo-EM map</summary>
+<br>
+
+First, lanuch a sequence-free job on an input map:
+```bash
+em3dfold build --map MAP.mrc -o out_no_seq
+```
+Afterwards, run the `hmm_search` sub-program of em3dfold to search the possible sequences out of sequence databases:
+```bash
+em3dfold hmm_search \
+  --input-dir out_no_seq \ # must be the same output dir of the seq-free modeling job
+  --protein-fasta protein_db.fa \ # contains all candidate sequences
+  --na-fasta na_db.fa \ # contains all candidate sequences
+  --out out_dir
+```
+The all/best matched sequences for each fragment are saved in `<out_dir>/all_hits.tsv` and `<out_dir>/best_hits.tsv`
+
+
+Below shows how we search the possible sequences of EMD-73772 against *Homo sapiens* sequence databases:
+```bash
+# download the sequence database of homo sapiens
+wget http://huanglab.phys.hust.edu.cn/EM3DFold/examples/73772/homo_sapiens_protein.fa -O homo_sapiens_protein.fa
+wget http://huanglab.phys.hust.edu.cn/EM3DFold/examples/73772/homo_sapiens_rna.fa -O homo_sapiens_rna.fa
+# run hmm_search on previous sequence-free modeling output directory, e.g. 73772
+em3dfold hmm_search --input-dir 73772 --protein-fasta homo_sapiens_protein.fa --na-fasta homo_sapiens_rna.fa -o 73772/hmm_output --max-target-len 10000 # ignore too long sequences
+```
+
+The original sources for the prepared `homo_sapiens_protein.fa` and `homo_sapiens_rna.fa`:
+- nucleic acid from ncbi
+  - https://ftp.ncbi.nlm.nih.gov/refseq/H_sapiens/annotation/GRCh38_latest/refseq_identifiers/GRCh38_latest_rna.fna.gz
+- protein from uniprotkb
+  - https://www.uniprot.org/uniprotkb?query=Homo+sapiens&facets=reviewed%3Atrue
+
+
+We provide our searching result on this target, check the result:
+```bash
+wget -qO- 'http://huanglab.phys.hust.edu.cn/EM3DFold/examples/73772/best_hits.tsv'
+```
+As shown, we identified 5 candidate sequences: `NR_024457.2`, `NM_001378633.1`, `NR_027232.1`, `XM_011522507.4`, `XR_007086624.1` for nucleic acids, in which `XM_011522507.4` is the correct match of chain B of PDB-9Z2N.
+
+For proteins, we identified 2 protein sequences as candidates: `Q08J23` and `P14618`, in which `Q08J23` is the correct match of chain A of PDB-9Z2N.
+
+
+</details>
+
 
 
 ## Trouble shooting
