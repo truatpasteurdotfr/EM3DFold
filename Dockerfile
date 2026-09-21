@@ -1,4 +1,4 @@
-FROM ghcr.io/prefix-dev/pixi:0.81.0-trixe
+FROM ghcr.io/prefix-dev/pixi:0.81.0-trixie
 
 RUN apt-get update &&\
  DEBIAN_FRONTEND=noninteractive apt-get -y upgrade &&\
