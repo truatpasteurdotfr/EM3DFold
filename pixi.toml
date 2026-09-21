@@ -82,7 +82,9 @@ zstd = { version = "==1.5.7", build = "hb78ec9c_7" }
 # assuming that you have downloaded the weights there with
 # mkdir /home/tru/pixi.d/em3dfold/download
 # bash scripts/download.sh /home/tru/pixi.d/em3dfold/download
-env = { EM_WEIGHTS_DIR = "/home/tru/pixi.d/em3dfold/download/weights" }
+#env = { EM_WEIGHTS_DIR = "/home/tru/pixi.d/em3dfold/download/weights" }
+# bash scripts/download.sh /app/download
+env = { EM_WEIGHTS_DIR = "/app/download/weights" }
 
 [feature.gpu.system-requirements]
 cuda = "11.8"
