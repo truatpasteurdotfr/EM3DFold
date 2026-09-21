@@ -1,4 +1,5 @@
-git clone https://github.com/huang-laboratory/EM3DFold
+git clone https://github.com/truatpasteurdotfr/EM3DFold
+#git clone https://github.com/huang-laboratory/EM3DFold
 cd EM3DFold
 pixi install
 pixi run python3 -c "import torch; print(torch.compiled_with_cxx11_abi())"

@@ -1,0 +1,130 @@
+[workspace]
+channels = ["pytorch", "nvidia", "conda-forge"]
+name = "em3dfold"
+platforms = ["linux-64"]
+version = "0.1.0"
+
+[tasks]
+
+[dependencies]
+_openmp_mutex = { version = "==4.5", build = "20_gnu" }
+antlr-python-runtime = { version = "==4.9.3", build = "pyhd8ed1ab_1" }
+biopython = { version = "==1.84", build = "py310hc51659f_0" }
+bzip2 = { version = "==1.0.8", build = "hda65f42_10" }
+ca-certificates = { version = "==2026.7.22", build = "hbd8a1cb_0" }
+colorama = { version = "==0.4.6", build = "pyhd8ed1ab_1" }
+einops = { version = "==0.8.0", build = "pyhd8ed1ab_1" }
+freetype = { version = "==2.14.3", build = "ha770c72_2" }
+icu = { version = "==78.3", build = "py310h44b86e0_2" }
+lcms2 = { version = "==2.19.1", build = "h9073bf1_3" }
+ld_impl_linux-64 = { version = "==2.46.1", build = "default_hbd61a6d_102" }
+lerc = { version = "==4.2.0", build = "hdb68285_0" }
+libblas = { version = "==3.9.0", build = "20_linux64_openblas" }
+libcblas = { version = "==3.9.0", build = "20_linux64_openblas" }
+libdeflate = { version = "==1.25", build = "hd45a770_1" }
+libffi = { version = "==3.7.0", build = "h81df57d_1" }
+libfreetype = { version = "==2.14.3", build = "ha770c72_2" }
+libfreetype6 = { version = "==2.14.3", build = "h5e6c136_2" }
+libgcc = { version = "==16.2.0", build = "ha9f2e26_5" }
+libgcc-ng = { version = "==16.2.0", build = "h69a702a_5" }
+libgfortran = { version = "==16.2.0", build = "h69a702a_5" }
+libgfortran-ng = { version = "==16.2.0", build = "h69a702a_5" }
+libgfortran5 = { version = "==16.2.0", build = "h6b99dfc_5" }
+libgomp = { version = "==16.2.0", build = "he0feb66_5" }
+libjpeg-turbo = { version = "==3.2.0", build = "hb03c661_1" }
+liblapack = { version = "==3.9.0", build = "20_linux64_openblas" }
+libllvm14 = { version = "==14.0.6", build = "hcd5def8_4" }
+liblzma = { version = "==5.8.3", build = "hb03c661_1" }
+liblzma-devel = { version = "==5.8.3", build = "hb03c661_1" }
+libnsl = { version = "==2.0.1", build = "hb9d3cd8_1" }
+libopenblas = { version = "==0.3.25", build = "pthreads_h413a1c8_0" }
+libpng = { version = "==1.6.58", build = "h922cc85_1" }
+libsqlite = { version = "==3.53.4", build = "h13e7031_1" }
+libstdcxx = { version = "==16.2.0", build = "h934c35e_5" }
+libstdcxx-ng = { version = "==16.2.0", build = "hdf11a46_5" }
+libtiff = { version = "==4.7.2", build = "hcc2c06a_1" }
+libuuid = { version = "==2.42.3", build = "hcfc3c73_0" }
+libwebp-base = { version = "==1.6.0", build = "hd42ef1d_1" }
+libxcb = { version = "==1.15", build = "h0b41bf4_0" }
+libxcrypt = { version = "==4.4.38", build = "h280c20c_0" }
+libzlib = { version = "==1.3.2", build = "h25fd6f3_3" }
+llvmlite = { version = "==0.42.0", build = "py310h1b8f574_1" }
+mrcfile = { version = "==1.4.3", build = "pyhd8ed1ab_0" }
+ncurses = { version = "==6.6", build = "hdb14827_1" }
+numba = { version = "==0.59.1", build = "py310h7dc5dd1_0" }
+numpy = { version = "==1.26.2", build = "py310hb13e2d6_0" }
+omegaconf = { version = "==2.3.0", build = "pyhd8ed1ab_0" }
+openjpeg = { version = "==2.5.4", build = "heb1ab33_2" }
+openssl = { version = "==3.6.4", build = "h781a0a9_0" }
+packaging = { version = "==26.3", build = "pyhc364b38_0" }
+pillow = { version = "==10.0.1", build = "py310h01dd4db_2" }
+pip = { version = "==23.3.1", build = "pyhd8ed1ab_0" }
+pthread-stubs = { version = "==0.4", build = "h7cc23a3_1004" }
+python = { version = "==3.10.14", build = "hd12c33a_0_cpython" }
+python_abi = { version = "==3.10", build = "9_cp310" }
+pyyaml = { version = "==6.0.3", build = "py310h3406613_1" }
+readline = { version = "==8.3", build = "hd6e31c0_1" }
+scipy = { version = "==1.11.4", build = "py310hb13e2d6_0" }
+tk = { version = "==8.6.13", build = "noxft_h1df4ec4_4" }
+tqdm = { version = "==4.66.5", build = "pyhd8ed1ab_0" }
+typing_extensions = { version = "==4.16.0", build = "pyhcf101f3_0" }
+tzdata = { version = "==2026c", build = "h151e31d_0" }
+wheel = { version = "==0.48.0", build = "pyhd8ed1ab_0" }
+xorg-libxau = { version = "==1.0.12", build = "h7cc23a3_2" }
+xorg-libxdmcp = { version = "==1.1.5", build = "h7cc23a3_2" }
+xz = { version = "==5.8.3", build = "ha02ee65_1" }
+xz-gpl-tools = { version = "==5.8.3", build = "ha02ee65_1" }
+xz-tools = { version = "==5.8.3", build = "hb03c661_1" }
+yaml = { version = "==0.2.5", build = "hebe6cf0_3" }
+zstd = { version = "==1.5.7", build = "hb78ec9c_7" }
+
+[activation]
+# assuming that you have downloaded the weights there with
+# mkdir /home/tru/pixi.d/em3dfold/download
+# bash scripts/download.sh /home/tru/pixi.d/em3dfold/download
+env = { EM_WEIGHTS_DIR = "/home/tru/pixi.d/em3dfold/download/weights" }
+
+[feature.gpu.system-requirements]
+cuda = "11.8"
+
+[feature.gpu.dependencies]
+cuda = "11.8.*"
+
+[environments]
+default = ["gpu"]
+
+[pypi-dependencies]
+absl-py = "==2.3.1"
+beautifulsoup4 = "==4.14.2"
+certifi = "==2026.7.22"
+charset-normalizer = "==3.5.1"
+cupy-cuda11x = "==13.6.0"
+#em3dfold = "==1.2.0"
+fair-esm = "==2.0.0"
+fastrlock = "==0.8.3"
+filelock = "==4.0.1"
+#flash-attn = "==2.3.2"
+fsspec = "==2026.9.0"
+gdown = "==5.2.0"
+idna = "==3.20"
+jinja2 = "==3.1.6"
+markupsafe = "==3.0.3"
+ml-collections = "==1.1.0"
+mpmath = "==1.3.0"
+networkx = "==3.4.2"
+ninja = "==1.13.0"
+ortools = "==9.4.1874"
+protobuf = "==7.36.2"
+psutil = "==6.1.1"
+pydssp = "==0.9.0"
+pyhmmer = "==0.11.0"
+pysocks = "==1.7.1"
+requests = "==2.34.2"
+#setuptools = "==68.2.2"
+soupsieve = "==2.8"
+sympy = "==1.14.0"
+torch = {version = "==2.1.2+cu118", index = "https://download.pytorch.org/whl/cu118" }
+torchaudio = {version = "==2.1.2+cu118", index = "https://download.pytorch.org/whl/cu118" }
+torchvision = {version = "==0.16.2+cu118", index = "https://download.pytorch.org/whl/cu118" }
+triton = "==2.1.0"
+urllib3 = "==2.8.0"
