@@ -2,7 +2,7 @@ FROM ghcr.io/prefix-dev/pixi:0.81.0-trixie
 
 RUN apt-get update &&\
  DEBIAN_FRONTEND=noninteractive apt-get -y upgrade &&\
- DEBIAN_FRONTEND=noninteractive apt-get -y install git build-essential cmake  &&\
+ DEBIAN_FRONTEND=noninteractive apt-get -y install git build-essential wget  &&\
  DEBIAN_FRONTEND=noninteractive apt-get -y autoremove &&\
  DEBIAN_FRONTEND=noninteractive apt-get -y clean all
 RUN date +"%Y-%m-%d-%H%M" > /last_update
